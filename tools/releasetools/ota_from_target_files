@@ -364,28 +364,28 @@ def WriteFullOTAPackage(input_zip, output_zip):
   symlinks = CopySystemFiles(input_zip, output_zip)
   script.MakeSymlinks(symlinks)
 
-  boot_img = File("boot.img", common.BuildBootableImage(
-      os.path.join(OPTIONS.input_tmp, "BOOT")))
-  recovery_img = File("recovery.img", common.BuildBootableImage(
-      os.path.join(OPTIONS.input_tmp, "RECOVERY")))
-  i = MakeRecoveryPatch(output_zip, recovery_img, boot_img)
+#  """boot_img = File("boot.img", common.BuildBootableImage(
+#      os.path.join(OPTIONS.input_tmp, "BOOT")))
+#  recovery_img = File("recovery.img", common.BuildBootableImage(
+#      os.path.join(OPTIONS.input_tmp, "RECOVERY")))
+#  i = MakeRecoveryPatch(output_zip, recovery_img, boot_img)"""
 
   Item.GetMetadata()
 
   # GetMetadata uses the data in android_filesystem_config.h to assign
   # the uid/gid/mode of all files.  We want to override that for the
   # recovery patching shell script to make it executable.
-  i.uid = 0
-  i.gid = 0
-  i.mode = 0544
+#  """i.uid = 0
+#  i.gid = 0
+#  i.mode = 0544"""
   Item.Get("system").SetPermissions(script)
 
-  common.CheckSize(boot_img.data, "boot.img")
-  common.ZipWriteStr(output_zip, "boot.img", boot_img.data)
-  script.ShowProgress(0.2, 0)
+#  """common.CheckSize(boot_img.data, "boot.img")
+#  common.ZipWriteStr(output_zip, "boot.img", boot_img.data)
+#  script.ShowProgress(0.2, 0)
 
-  script.ShowProgress(0.2, 10)
-  script.WriteRawImage("boot", "boot.img")
+#  script.ShowProgress(0.2, 10)
+#  script.WriteRawImage("boot", "boot.img")"""
 
   script.ShowProgress(0.1, 0)
   device_specific.FullOTA_InstallEnd()

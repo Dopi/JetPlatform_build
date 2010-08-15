@@ -37,4 +37,7 @@ echo "# Do not try to parse ro.build.description or .fingerprint"
 echo "ro.build.description=$PRIVATE_BUILD_DESC"
 echo "ro.build.fingerprint=$BUILD_FINGERPRINT"
 
+echo "# This is needed to set the dpi correctly. For some reason it doesn't figure it out for itself"
+echo "ro.sf.lcd_density=240"
+
 echo "# end build properties"

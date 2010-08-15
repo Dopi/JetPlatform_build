@@ -61,7 +61,9 @@ ifeq ($(TARGET_BUILD_TYPE),debug)
 endif
 # Apps are always signed with test keys, and may be re-signed in a post-build
 # step.  If that happens, the "test-keys" tag will be removed by that step.
-BUILD_VERSION_TAGS += test-keys
+BUILD_VERSION_TAGS += ota-rel-keys \
+					release-keys
+
 BUILD_VERSION_TAGS := $(subst $(space),$(comma),$(sort $(BUILD_VERSION_TAGS)))
 
 # A human-readable string that descibes this build in detail.
@@ -414,6 +416,7 @@ $(2): $(4)/hash-timestamp
 			echo >> $$@; \
 		done
 	$$(hide) echo "</table>" >> $$@
+	$$(hide) echo "To obtain the source code covered under above licenses, please visit http://opensource.samsungmobile.com/" >> $$@
 	$$(hide) echo "</body></html>" >> $$@
 notice_files: $(1) $(2)
 endef
@@ -906,7 +909,7 @@ target-files-package: $(BUILT_TARGET_FILES_PACKAGE)
 
 ifneq ($(TARGET_SIMULATOR),true)
 ifneq ($(TARGET_PRODUCT),sdk)
-ifneq ($(TARGET_DEVICE),generic)
+ifneq ($(TARGET_PRODUCT),generic)
 
 name := $(TARGET_PRODUCT)
 ifeq ($(TARGET_BUILD_TYPE),debug)
@@ -936,7 +939,7 @@ $(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) otatools
 .PHONY: otapackage
 otapackage: $(INTERNAL_OTA_PACKAGE_TARGET)
 
-endif    # TARGET_DEVICE != generic
+endif    # TARGET_PRODUCT != generic
 endif    # TARGET_PRODUCT != sdk
 endif    # TARGET_SIMULATOR != true
 
@@ -1202,15 +1205,6 @@ $(INTERNAL_SDK_TARGET): $(deps)
 		chmod -R ug+rwX $(PRIVATE_DIR) && \
 		cd $(dir $@) && zip -rq $(notdir $@) $(PRIVATE_NAME) \
 	) || ( rm -rf $(PRIVATE_DIR) $@ && exit 44 )
-
-
-# Is a Windows SDK requested? If so, we need some definitions from here
-# in order to find the Linux SDK used to create the Windows one.
-ifneq ($(filter win_sdk,$(MAKECMDGOALS)),)
-LINUX_SDK_NAME := $(sdk_name)
-LINUX_SDK_DIR  := $(sdk_dir)
-include $(TOPDIR)development/build/tools/windows_sdk.mk
-endif
 
 endif # !simulator
 

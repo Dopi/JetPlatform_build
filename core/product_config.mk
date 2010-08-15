@@ -97,17 +97,22 @@ ifdef product_goals
     $(error Only one PRODUCT-* goal may be specified; saw "$(product_goals)")
   endif
   goal_name := $(product_goals)
-  product_goals := $(patsubst PRODUCT-%,%,$(product_goals))
+  product_goals := $(patsubst PRODUCT-sec_%,%,$(product_goals))
   product_goals := $(subst -, ,$(product_goals))
-  ifneq ($(words $(product_goals)),2)
-    $(error Bad PRODUCT-* goal "$(goal_name)")
-  endif
-
+  ifeq ($(words $(product_goals)),3)
   # The product they want
-  TARGET_PRODUCT := $(word 1,$(product_goals))
+  TARGET_PRODUCT := $(word 1,$(product_goals))-$(word 2,$(product_goals))
 
   # The variant they want
-  TARGET_BUILD_VARIANT := $(word 2,$(product_goals))
+  TARGET_BUILD_VARIANT := $(word 3,$(product_goals))
+
+  else
+    # The product they want
+    TARGET_PRODUCT := $(word 1,$(product_goals))
+
+    # The variant they want
+    TARGET_BUILD_VARIANT := $(word 2,$(product_goals))
+  endif
 
   # The build server wants to do make PRODUCT-dream-installclean
   # which really means TARGET_PRODUCT=dream make installclean.
@@ -163,7 +168,7 @@ include $(BUILD_SYSTEM)/device.mk
 #TODO: when we start allowing direct pointers to product files,
 #    guarantee that they're in this list.
 $(call import-products, $(get-all-product-makefiles))
-$(check-all-products)
+#$(check-all-products)
 #$(dump-products)
 #$(error done)
 
@@ -197,10 +202,10 @@ endif
 # (Can be overridden in the device config, e.g.: PRODUCT_LOCALES += hdpi)
 PRODUCT_LOCALES := $(strip \
 	$(PRODUCT_LOCALES) \
-	$(if $(filter %dpi,$(PRODUCT_LOCALES)),,mdpi))
+	$(if $(filter %dpi,$(PRODUCT_LOCALES)),,hdpi))
 
 # Everyone gets nodpi assets which are density-independent.
-PRODUCT_LOCALES += nodpi
+PRODUCT_LOCALES += hdpi
 
 # Assemble the list of options.
 PRODUCT_AAPT_CONFIG := $(PRODUCT_LOCALES)
