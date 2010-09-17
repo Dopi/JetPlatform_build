@@ -223,12 +223,38 @@ $(call all-Iaidl-files-under,.)
 endef
 
 ###########################################################
+## Find all of the logtags files under the named directories.
+## Meant to be used like:
+##    SRC_FILES := $(call all-logtags-files-under,src)
+###########################################################
+
+define all-logtags-files-under
+$(patsubst ./%,%, \
+  $(shell cd $(LOCAL_PATH) ; \
+          find $(1) -name "*.logtags" -and -not -name ".*") \
+  )
+endef
+
+###########################################################
+## Find all of the html files under the named directories.
+## Meant to be used like:
+##    SRC_FILES := $(call all-html-files-under,src tests)
+###########################################################
+
+define all-html-files-under
+$(patsubst ./%,%, \
+  $(shell cd $(LOCAL_PATH) ; \
+          find $(1) -name "*.html" -and -not -name ".*") \
+ )
+endef
+
+###########################################################
 ## Find all of the html files from here.  Meant to be used like:
 ##    SRC_FILES := $(call all-subdir-html-files)
 ###########################################################
 
 define all-subdir-html-files
-$(patsubst ./%,%,$(shell cd $(LOCAL_PATH) ; find . -name "*.html"))
+$(call all-html-files-under,.)
 endef
 
 ###########################################################
@@ -559,6 +585,7 @@ endef
 # $(1): list of tags to accept
 # $(2): list of tags to reject
 #TODO(dbort): do $(if $(strip $(1)),$(1),$(ALL_MODULE_TAGS))
+#TODO(jbq): as of 20100106 nobody uses the second parameter
 define get-tagged-modules
 $(filter-out \
 	$(call modules-for-tag-list,$(2)), \
@@ -644,6 +671,7 @@ define dump-module-variables
 @echo PRIVATE_ARFLAGS=$(PRIVATE_ARFLAGS);
 @echo PRIVATE_AAPT_FLAGS=$(PRIVATE_AAPT_FLAGS);
 @echo PRIVATE_DX_FLAGS=$(PRIVATE_DX_FLAGS);
+@echo PRIVATE_JAVACFLAGS=$(PRIVATE_JAVACFLAGS);
 @echo PRIVATE_JAVA_LIBRARIES=$(PRIVATE_JAVA_LIBRARIES);
 @echo PRIVATE_ALL_SHARED_LIBRARIES=$(PRIVATE_ALL_SHARED_LIBRARIES);
 @echo PRIVATE_ALL_STATIC_LIBRARIES=$(PRIVATE_ALL_STATIC_LIBRARIES);
@@ -717,6 +745,16 @@ endef
 #$(AIDL) $(PRIVATE_AIDL_FLAGS) $< - | indent -nut -br -npcs -l1000 > $@
 
 
+###########################################################
+## Commands for running java-event-log-tags.py
+###########################################################
+
+define transform-logtags-to-java
+@mkdir -p $(dir $@)
+@echo "logtags: $@ <= $<"
+$(hide) $(JAVATAGS) -o $@ $^
+endef
+
 
 ###########################################################
 ## Commands for running gcc to compile a C++ file
@@ -727,11 +765,11 @@ define transform-cpp-to-o
 @echo "target $(PRIVATE_ARM_MODE) C++: $(PRIVATE_MODULE) <= $<"
 $(hide) $(PRIVATE_CXX) \
 	$(foreach incdir, \
+	    $(PRIVATE_C_INCLUDES) \
 	    $(if $(PRIVATE_NO_DEFAULT_COMPILER_FLAGS),, \
 		$(TARGET_PROJECT_INCLUDES) \
 		$(TARGET_C_INCLUDES) \
 	     ) \
-	    $(PRIVATE_C_INCLUDES) \
 	  , \
 	    -I $(incdir) \
 	 ) \
@@ -759,11 +797,11 @@ define transform-c-or-s-to-o-no-deps
 @mkdir -p $(dir $@)
 $(hide) $(PRIVATE_CC) \
 	$(foreach incdir, \
+	    $(PRIVATE_C_INCLUDES) \
 	    $(if $(PRIVATE_NO_DEFAULT_COMPILER_FLAGS),, \
 		$(TARGET_PROJECT_INCLUDES) \
 		$(TARGET_C_INCLUDES) \
 	     ) \
-	    $(PRIVATE_C_INCLUDES) \
 	  , \
 	    -I $(incdir) \
 	 ) \
@@ -823,11 +861,11 @@ define transform-host-cpp-to-o
 @echo "host C++: $(PRIVATE_MODULE) <= $<"
 $(hide) $(PRIVATE_CXX) \
 	$(foreach incdir, \
+	    $(PRIVATE_C_INCLUDES) \
 	    $(if $(PRIVATE_NO_DEFAULT_COMPILER_FLAGS),, \
 		$(HOST_PROJECT_INCLUDES) \
 		$(HOST_C_INCLUDES) \
 	     ) \
-	    $(PRIVATE_C_INCLUDES) \
 	  , \
 	    -I $(incdir) \
 	 ) \
@@ -853,11 +891,11 @@ define transform-host-c-or-s-to-o-no-deps
 @mkdir -p $(dir $@)
 $(hide) $(PRIVATE_CC) \
 	$(foreach incdir, \
+	    $(PRIVATE_C_INCLUDES) \
 	    $(if $(PRIVATE_NO_DEFAULT_COMPILER_FLAGS),, \
 		$(HOST_PROJECT_INCLUDES) \
 		$(HOST_C_INCLUDES) \
 	     ) \
-	    $(PRIVATE_C_INCLUDES) \
 	  , \
 	    -I $(incdir) \
 	 ) \
@@ -909,7 +947,7 @@ endef
 ## Commands for running ar
 ###########################################################
 
-define extract-and-include-whole-static-libs
+define extract-and-include-target-whole-static-libs
 $(foreach lib,$(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES), \
 	@echo "preparing StaticLib: $(PRIVATE_MODULE) [including $(lib)]"; \
 	ldir=$(PRIVATE_INTERMEDIATES_DIR)/WHOLE/$(basename $(notdir $(lib)))_objs;\
@@ -929,22 +967,39 @@ endef
 define transform-o-to-static-lib
 @mkdir -p $(dir $@)
 @rm -f $@
-$(extract-and-include-whole-static-libs)
+$(extract-and-include-target-whole-static-libs)
 @echo "target StaticLib: $(PRIVATE_MODULE) ($@)"
-$(hide) $(TARGET_AR) $(TARGET_GLOBAL_ARFLAGS) $(PRIVATE_ARFLAGS) $@ $^
+$(hide) echo $^ | xargs $(TARGET_AR) $(TARGET_GLOBAL_ARFLAGS) $(PRIVATE_ARFLAGS) $@
 endef
 
 ###########################################################
 ## Commands for running host ar
 ###########################################################
 
+define extract-and-include-host-whole-static-libs
+$(foreach lib,$(PRIVATE_ALL_WHOLE_STATIC_LIBRARIES), \
+	@echo "preparing StaticLib: $(PRIVATE_MODULE) [including $(lib)]"; \
+	ldir=$(PRIVATE_INTERMEDIATES_DIR)/WHOLE/$(basename $(notdir $(lib)))_objs;\
+	rm -rf $$ldir; \
+	mkdir -p $$ldir; \
+	filelist=; \
+	for f in `$(HOST_AR) t $(lib) | grep '\.o$$'`; do \
+	    $(HOST_AR) p $(lib) $$f > $$ldir/$$f; \
+	    filelist="$$filelist $$ldir/$$f"; \
+	done ; \
+	$(HOST_AR) $(HOST_GLOBAL_ARFLAGS) $(PRIVATE_ARFLAGS) $@ $$filelist;\
+)
+endef
+
 # Explicitly delete the archive first so that ar doesn't
 # try to add to an existing archive.
 define transform-host-o-to-static-lib
 @mkdir -p $(dir $@)
-@echo "host StaticLib: $(PRIVATE_MODULE) ($@)"
 @rm -f $@
-$(HOST_AR) $(HOST_GLOBAL_ARFLAGS) $(PRIVATE_ARFLAGS) $@ $^
+$(extract-and-include-host-whole-static-libs)
+@echo "host StaticLib: $(PRIVATE_MODULE) ($@)"
+echo $(filter %.o, $^) | \
+	xargs $(HOST_AR) $(HOST_GLOBAL_ARFLAGS) $(PRIVATE_ARFLAGS) $@
 endef
 
 
@@ -1041,13 +1096,10 @@ endef
 ## Commands for filtering a target executable or library
 ###########################################################
 
-# Because of bug 743462 ("Prelinked image magic gets stripped
-# by arm-elf-objcopy"), we have to use soslim to strip target
-# binaries.
 define transform-to-stripped
 @mkdir -p $(dir $@)
 @echo "target Strip: $(PRIVATE_MODULE) ($@)"
-$(hide) $(SOSLIM) --strip --shady --quiet $< --outfile $@
+$(hide) $(TARGET_STRIP_COMMAND)
 endef
 
 define transform-to-prelinked
@@ -1166,7 +1218,7 @@ endef
 define create-resource-java-files
 @mkdir -p $(PRIVATE_SOURCE_INTERMEDIATES_DIR)
 @mkdir -p $(dir $(PRIVATE_RESOURCE_PUBLICS_OUTPUT))
-$(hide) $(AAPT) package $(PRIVATE_AAPT_FLAGS) -m -z \
+$(hide) $(AAPT) package $(PRIVATE_AAPT_FLAGS) -m \
     $(eval # PRODUCT_AAPT_CONFIG is intentionally missing-- see comment.) \
     $(addprefix -J , $(PRIVATE_SOURCE_INTERMEDIATES_DIR)) \
     $(addprefix -M , $(PRIVATE_ANDROID_MANIFEST)) \
@@ -1178,13 +1230,15 @@ $(hide) $(AAPT) package $(PRIVATE_AAPT_FLAGS) -m -z \
     $(addprefix --min-sdk-version , $(DEFAULT_APP_TARGET_SDK)) \
     $(addprefix --target-sdk-version , $(DEFAULT_APP_TARGET_SDK)) \
     $(addprefix --version-code , $(PLATFORM_SDK_VERSION)) \
-    $(addprefix --version-name , $(PLATFORM_VERSION))
+    $(addprefix --version-name , $(PLATFORM_VERSION)) \
+    $(addprefix --rename-manifest-package , $(PRIVATE_MANIFEST_PACKAGE_NAME)) \
+    $(addprefix --rename-instrumentation-target-package , $(PRIVATE_INSTRUMENTATION_FOR_PACKAGE_NAME))
 endef
 
 ifeq ($(HOST_OS),windows)
 xlint_unchecked :=
 else
-#xlint_unchecked := -Xlint:unchecked
+xlint_unchecked := -Xlint:unchecked
 endif
 
 # emit-line, <word list>, <output file>
@@ -1254,7 +1308,8 @@ $(hide) tr ' ' '\n' < $(dir $(PRIVATE_CLASS_INTERMEDIATES_DIR))/java-source-list
 $(hide) $(TARGET_JAVAC) -encoding ascii $(PRIVATE_BOOTCLASSPATH) \
     $(addprefix -classpath ,$(strip \
         $(call normalize-path-list,$(PRIVATE_ALL_JAVA_LIBRARIES)))) \
-    $(strip $(PRIVATE_JAVAC_DEBUG_FLAGS)) $(xlint_unchecked) \
+    $(PRIVATE_JAVACFLAGS) $(strip $(PRIVATE_JAVAC_DEBUG_FLAGS)) \
+	$(if $(findstring true,$(LOCAL_WARNINGS_ENABLE)),$(xlint_unchecked),) \
     -extdirs "" -d $(PRIVATE_CLASS_INTERMEDIATES_DIR) \
     \@$(dir $(PRIVATE_CLASS_INTERMEDIATES_DIR))/java-source-list-uniq \
     || ( rm -rf $(PRIVATE_CLASS_INTERMEDIATES_DIR) ; exit 41 )
@@ -1311,7 +1366,7 @@ endef
 #values; applications can override these by explicitly stating
 #them in their manifest.
 define add-assets-to-package
-$(hide) $(AAPT) package -z -u $(PRIVATE_AAPT_FLAGS) \
+$(hide) $(AAPT) package -u $(PRIVATE_AAPT_FLAGS) \
     $(addprefix -c , $(PRODUCT_AAPT_CONFIG)) \
     $(addprefix -M , $(PRIVATE_ANDROID_MANIFEST)) \
     $(addprefix -S , $(PRIVATE_RESOURCE_DIR)) \
@@ -1321,15 +1376,15 @@ $(hide) $(AAPT) package -z -u $(PRIVATE_AAPT_FLAGS) \
     $(addprefix --target-sdk-version , $(DEFAULT_APP_TARGET_SDK)) \
     $(addprefix --version-code , $(PLATFORM_SDK_VERSION)) \
     $(addprefix --version-name , $(PLATFORM_VERSION)) \
+    $(addprefix --rename-manifest-package , $(PRIVATE_MANIFEST_PACKAGE_NAME)) \
+    $(addprefix --rename-instrumentation-target-package , $(PRIVATE_INSTRUMENTATION_FOR_PACKAGE_NAME)) \
     -F $@
 endef
 
-#TODO: Allow library directory to be specified based on the target
-#      CPU and ABI instead of being hard coded as armeabi.
 define add-jni-shared-libs-to-package
 $(hide) rm -rf $(dir $@)lib
-$(hide) mkdir -p $(dir $@)lib/armeabi
-$(hide) cp $(PRIVATE_JNI_SHARED_LIBRARIES) $(dir $@)lib/armeabi
+$(hide) mkdir -p $(dir $@)lib/$(TARGET_CPU_ABI)
+$(hide) cp $(PRIVATE_JNI_SHARED_LIBRARIES) $(dir $@)lib/$(TARGET_CPU_ABI)
 $(hide) (cd $(dir $@) && zip -r $(notdir $@) lib)
 $(hide) rm -rf $(dir $@)lib
 endef
@@ -1392,7 +1447,7 @@ $(call dump-words-to-file,$(sort\
 	$(PRIVATE_JAVA_SOURCES)),\
 	$(PRIVATE_INTERMEDIATES_DIR)/java-source-list-uniq)
 $(hide) $(HOST_JAVAC) -encoding ascii -g \
-	$(xlint_unchecked) \
+	$(PRIVATE_JAVACFLAGS) $(xlint_unchecked) \
 	$(addprefix -classpath ,$(strip \
 		$(call normalize-path-list,$(PRIVATE_ALL_JAVA_LIBRARIES)))) \
 	-extdirs "" -d $(PRIVATE_CLASS_INTERMEDIATES_DIR)\
@@ -1522,7 +1577,6 @@ define transform-prebuilt-to-target-strip-comments
 $(copy-file-to-target-strip-comments)
 endef
 
-
 ###########################################################
 ## On some platforms (MacOS), after copying a static
 ## library, ranlib must be run to update an internal
@@ -1548,6 +1602,37 @@ define transform-ranlib-copy-hack
 true
 endef
 endif
+
+
+###########################################################
+## Commands to call Proguard
+###########################################################
+
+# Command to copy the file with acp, if proguard is disabled.
+define proguard-disabled-commands
+@echo Copying: $@
+$(hide) $(ACP) $< $@
+endef
+
+# Command to call Proguard
+# $(1): extra flags for instrumentation.
+define proguard-enabled-commands
+@echo Proguard: $@
+$(hide) $(PROGUARD) -injars $< -outjars $@ $(PRIVATE_PROGUARD_FLAGS) $(1)
+endef
+
+# Figure out the proguard dictionary file of the module that is instrumentationed for.
+define get-instrumentation-proguard-flags
+$(if $(PRIVATE_INSTRUMENTATION_FOR),$(if $(ALL_MODULES.$(PRIVATE_INSTRUMENTATION_FOR).PROGUARD_ENABLED),-applymapping $(call intermediates-dir-for,APPS,$(PRIVATE_INSTRUMENTATION_FOR),,COMMON)/proguard_dictionary))
+endef
+
+define transform-jar-to-proguard
+$(eval _instrumentation_proguard_flags:=$(call get-instrumentation-proguard-flags))
+$(eval _enable_proguard:=$(PRIVATE_PROGUARD_ENABLED)$(_instrumentation_proguard_flags))
+$(if $(_enable_proguard),$(call proguard-enabled-commands,$(_instrumentation_proguard_flags)),$(call proguard-disabled-commands))
+$(eval _instrumentation_proguard_flags:=)
+$(eval _enable_proguard:=)
+endef
 
 
 ###########################################################
@@ -1636,13 +1721,64 @@ endef
 # INSTALLED_RADIOIMAGE_TARGET.
 # $(1): filename
 define add-radio-file
-  $(eval $(call add-radio-file-internal,$(1)))
+  $(eval $(call add-radio-file-internal,$(1),$(notdir $(1))))
 endef
 define add-radio-file-internal
-INSTALLED_RADIOIMAGE_TARGET += $$(PRODUCT_OUT)/$(1)
-ALL_PREBUILT += $$(PRODUCT_OUT)/$(1)
-$$(PRODUCT_OUT)/$(1) : $$(LOCAL_PATH)/$(1) | $$(ACP)
+INSTALLED_RADIOIMAGE_TARGET += $$(PRODUCT_OUT)/$(2)
+ALL_PREBUILT += $$(PRODUCT_OUT)/$(2)
+$$(PRODUCT_OUT)/$(2) : $$(LOCAL_PATH)/$(1) | $$(ACP)
 	$$(transform-prebuilt-to-target)
+endef
+
+
+###########################################################
+# Override the package defined in $(1), setting the
+# variables listed below differently.
+#
+#  $(1): The makefile to override (relative to the source
+#        tree root)
+#  $(2): Old LOCAL_PACKAGE_NAME value.
+#  $(3): New LOCAL_PACKAGE_NAME value.
+#  $(4): New LOCALE_MANIFEST_PACKAGE_NAME value.
+#  $(5): New LOCAL_INSTRUMENTATION_FOR_PACKAGE_NAME value.
+#  $(6): New LOCAL_CERTIFICATE value.
+#
+# Note that LOCAL_PACKAGE_OVERRIDES is NOT cleared in
+# clear_vars.mk.
+###########################################################
+define inherit-package
+  $(eval $(call inherit-package-internal,$(1),$(2),$(3),$(4),$(5),$(6)))
+endef
+
+define inherit-package-internal
+  LOCAL_PACKAGE_OVERRIDES \
+      := $(strip $(1))||$(strip $(2))||$(strip $(3))||$(strip $(4))||&&$(strip $(5))||$(strip $(6)) $(LOCAL_PACKAGE_OVERRIDES)
+  include $(1)
+  LOCAL_PACKAGE_OVERRIDES \
+      := $(wordlist 1,$(words $(LOCAL_PACKAGE_OVERRIDES)), $(LOCAL_PACKAGE_OVERRIDES))
+endef
+
+# To be used with inherit-package above
+# Evalutes to true if the package was overridden
+define set-inherited-package-variables
+$(strip $(call set-inherited-package-variables-internal))
+endef
+
+define keep-or-override
+$(eval $(1) := $(if $(2),$(2),$($(1))))
+endef
+
+define set-inherited-package-variables-internal
+  $(eval _o := $(subst ||, ,$(lastword $(LOCAL_PACKAGE_OVERRIDES))))
+  $(eval _n := $(subst ||, ,$(firstword $(LOCAL_PACKAGE_OVERRIDES))))
+  $(if $(filter $(word 2,$(_n)),$(LOCAL_PACKAGE_NAME)), \
+    $(eval LOCAL_PACKAGE_NAME := $(word 3,$(_o))) \
+    $(eval LOCAL_MANIFEST_PACKAGE_NAME := $(word 4,$(_o))) \
+    $(call keep-or-override,LOCAL_INSTRUMENTATION_FOR_PACKAGE_NAME,$(patsubst &&%,%,$(word 5,$(_o)))) \
+    $(call keep-or-override,LOCAL_CERTIFICATE,$(word 6,$(_o))) \
+    $(eval LOCAL_OVERRIDES_PACKAGES := $(sort $(LOCAL_OVERRIDES_PACKAGES) $(word 2,$(_o)))) \
+    true \
+  ,)
 endef
 
 

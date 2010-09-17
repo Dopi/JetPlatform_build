@@ -9,6 +9,15 @@
 include $(BUILD_SYSTEM)/base_rules.mk
 #######################################
 
+####################################################
+## Add FDO flags if FDO is turned on and supported
+####################################################
+ifeq ($(strip $(LOCAL_NO_FDO_SUPPORT)),)
+  LOCAL_CFLAGS += $(TARGET_FDO_CFLAGS)
+  LOCAL_CPPFLAGS += $(TARGET_FDO_CFLAGS)
+  LOCAL_LDFLAGS += $(TARGET_FDO_CFLAGS)
+endif
+
 ###########################################################
 ## Define PRIVATE_ variables used by multiple module types
 ###########################################################
@@ -44,6 +53,7 @@ endif
 ## Define arm-vs-thumb-mode flags.
 ###########################################################
 LOCAL_ARM_MODE := $(strip $(LOCAL_ARM_MODE))
+ifeq ($(TARGET_ARCH),arm)
 arm_objects_mode := $(if $(LOCAL_ARM_MODE),$(LOCAL_ARM_MODE),arm)
 normal_objects_mode := $(if $(LOCAL_ARM_MODE),$(LOCAL_ARM_MODE),thumb)
 
@@ -52,6 +62,12 @@ normal_objects_mode := $(if $(LOCAL_ARM_MODE),$(LOCAL_ARM_MODE),thumb)
 # actually used (although they are usually empty).
 arm_objects_cflags := $($(my_prefix)$(arm_objects_mode)_CFLAGS)
 normal_objects_cflags := $($(my_prefix)$(normal_objects_mode)_CFLAGS)
+else
+arm_objects_mode :=
+normal_objects_mode :=
+arm_objects_cflags :=
+normal_objects_cflags :=
+endif
 
 ###########################################################
 ## Define per-module debugging flags.  Users can turn on

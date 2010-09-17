@@ -154,6 +154,26 @@ endif
 # else: Use the value set in the environment or buildspec.mk.
 
 # ---------------------------------------------------------------
+# Provide "APP-<appname>" targets, which lets you build
+# an unbundled app.
+#
+unbundled_goals := $(strip $(filter APP-%,$(MAKECMDGOALS)))
+ifdef unbundled_goals
+  ifneq ($(words $(unbundled_goals)),1)
+    $(error Only one APP-* goal may be specified; saw "$(unbundled_goals)"))
+  endif
+  TARGET_BUILD_APPS := $(strip $(subst -, ,$(patsubst APP-%,%,$(unbundled_goals))))
+  ifneq ($(filter $(DEFAULT_GOAL),$(MAKECMDGOALS)),)
+    MAKECMDGOALS := $(patsubst $(unbundled_goals),,$(MAKECMDGOALS))
+  else
+    MAKECMDGOALS := $(patsubst $(unbundled_goals),$(DEFAULT_GOAL),$(MAKECMDGOALS))
+  endif
+
+.PHONY: $(unbundled_goals)
+$(unbundled_goals): $(MAKECMDGOALS)
+endif # unbundled_goals
+
+# ---------------------------------------------------------------
 # Include the product definitions.
 # We need to do this to translate TARGET_PRODUCT into its
 # underlying TARGET_DEVICE before we start defining any rules.
@@ -162,6 +182,7 @@ include $(BUILD_SYSTEM)/node_fns.mk
 include $(BUILD_SYSTEM)/product.mk
 include $(BUILD_SYSTEM)/device.mk
 
+<<<<<<< HEAD
 # Read in all of the product definitions specified by the AndroidProducts.mk
 # files in the tree.
 #
@@ -169,6 +190,21 @@ include $(BUILD_SYSTEM)/device.mk
 #    guarantee that they're in this list.
 $(call import-products, $(get-all-product-makefiles))
 #$(check-all-products)
+=======
+ifneq ($(strip $(TARGET_BUILD_APPS)),)
+  # An unbundled app build needs only the core product makefiles.
+  $(call import-products,$(call get-product-makefiles,\
+      $(SRC_TARGET_DIR)/product/AndroidProducts.mk))
+else
+  # Read in all of the product definitions specified by the AndroidProducts.mk
+  # files in the tree.
+  #
+  #TODO: when we start allowing direct pointers to product files,
+  #    guarantee that they're in this list.
+  $(call import-products, $(get-all-product-makefiles))
+endif # TARGET_BUILD_APPS
+$(check-all-products)
+>>>>>>> 1e80c294ffef26a6a7fe435411cd7557003b1d3f
 #$(dump-products)
 #$(error done)
 

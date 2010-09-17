@@ -25,9 +25,18 @@
 # it includes.
 #
 
+# An unbundled app build needs only generic.mk.
+ifneq ($(TARGET_BUILD_APPS),)
 PRODUCT_MAKEFILES := \
+    $(LOCAL_DIR)/core.mk \
+    $(LOCAL_DIR)/generic.mk
+else
+PRODUCT_MAKEFILES := \
+    $(LOCAL_DIR)/core.mk \
     $(LOCAL_DIR)/generic.mk \
-    $(LOCAL_DIR)/min_dev.mk \
+    $(LOCAL_DIR)/generic_x86.mk \
+    $(LOCAL_DIR)/full.mk \
+    $(LOCAL_DIR)/full_x86.mk \
     $(LOCAL_DIR)/sdk.mk \
-    $(LOCAL_DIR)/sim.mk \
-    $(LOCAL_DIR)/generic_with_google.mk
+    $(LOCAL_DIR)/sim.mk
+endif

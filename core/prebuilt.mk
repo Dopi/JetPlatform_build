@@ -42,19 +42,40 @@ $(LOCAL_BUILT_MODULE) : $(LOCAL_PATH)/$(LOCAL_SRC_FILES) | $(ACP)
 endif
 endif
 
-ifeq ($(LOCAL_CERTIFICATE),)
-  # can't re-sign this package, so predexopt is not available.
-else
-
-# If this is not an absolute certificate, assign it to a generic one.
-ifeq ($(dir $(strip $(LOCAL_CERTIFICATE))),./)
-    LOCAL_CERTIFICATE := $(SRC_TARGET_DIR)/product/security/$(LOCAL_CERTIFICATE)
+ifeq ($(LOCAL_CERTIFICATE),EXTERNAL)
+  # The magic string "EXTERNAL" means this package will be signed with
+  # the test key throughout the build process, but we expect the final
+  # package to be signed with a different key.
+  #
+  # This can be used for packages where we don't have access to the
+  # keys, but want the package to be predexopt'ed.
+  LOCAL_CERTIFICATE := testkey
+  PACKAGES.$(LOCAL_MODULE).EXTERNAL_KEY := 1
 endif
+ifeq ($(LOCAL_CERTIFICATE),)
+  ifneq ($(filter APPS,$(LOCAL_MODULE_CLASS)),)
+    # It is now a build error to add a prebuilt .apk without
+    # specifying a key for it.
+    $(error No LOCAL_CERTIFICATE specified for prebuilt "$(LOCAL_SRC_FILES)")
+  endif
+else ifeq ($(LOCAL_CERTIFICATE),PRESIGNED)
+  # The magic string "PRESIGNED" means this package is already checked
+  # signed with its release key.
+  #
+  # By setting .CERTIFICATE but not .PRIVATE_KEY, this package will be
+  # mentioned in apkcerts.txt (with certificate set to "PRESIGNED")
+  # but the dexpreopt process will not try to re-sign the app.
+  PACKAGES.$(LOCAL_MODULE).CERTIFICATE := PRESIGNED
+  PACKAGES := $(PACKAGES) $(LOCAL_MODULE)
+else
+  # If this is not an absolute certificate, assign it to a generic one.
+  ifeq ($(dir $(strip $(LOCAL_CERTIFICATE))),./)
+      LOCAL_CERTIFICATE := $(SRC_TARGET_DIR)/product/security/$(LOCAL_CERTIFICATE)
+  endif
 
-PACKAGES.$(LOCAL_MODULE).PRIVATE_KEY := $(LOCAL_CERTIFICATE).pk8
-PACKAGES.$(LOCAL_MODULE).CERTIFICATE := $(LOCAL_CERTIFICATE).x509.pem
-PACKAGES := $(PACKAGES) $(LOCAL_MODULE)
-
+  PACKAGES.$(LOCAL_MODULE).PRIVATE_KEY := $(LOCAL_CERTIFICATE).pk8
+  PACKAGES.$(LOCAL_MODULE).CERTIFICATE := $(LOCAL_CERTIFICATE).x509.pem
+  PACKAGES := $(PACKAGES) $(LOCAL_MODULE)
 endif
 
 ifneq ($(prebuilt_module_is_a_library),)

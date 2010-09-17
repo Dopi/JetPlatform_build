@@ -14,12 +14,15 @@ endif
 # PRODUCT_COPY_FILES contains words like <source file>:<dest file>.
 # <dest file> is relative to $(PRODUCT_OUT), so it should look like,
 # e.g., "system/etc/file.xml".
+# The filter part means "only eval the copy-one-file rule if this
+# src:dest pair is the first one to match %:dest"
 $(foreach cf,$(PRODUCT_COPY_FILES), \
   $(eval _src := $(call word-colon,1,$(cf))) \
-  $(eval _dest := $(call \
-          append-path,$(PRODUCT_OUT),$(call word-colon,2,$(cf)))) \
-  $(eval $(call copy-one-file,$(_src),$(_dest))) \
-  $(eval ALL_DEFAULT_INSTALLED_MODULES += $(_dest)) \
+  $(eval _dest := $(call word-colon,2,$(cf))) \
+  $(eval _fulldest := $(call append-path,$(PRODUCT_OUT),$(_dest))) \
+  $(if $(filter $(_src):$(_dest),$(firstword $(filter %:$(_dest),$(PRODUCT_COPY_FILES)))), \
+    $(eval $(call copy-one-file,$(_src),$(_fulldest))),) \
+  $(eval ALL_DEFAULT_INSTALLED_MODULES += $(_fulldest)) \
  )
 
 # -----------------------------------------------------------------
@@ -111,7 +114,7 @@ $(word 3, 3, $(call default-locale, $(1)))
 endef
 
 BUILDINFO_SH := build/tools/buildinfo.sh
-$(INSTALLED_BUILD_PROP_TARGET): $(BUILDINFO_SH) $(INTERNAL_BUILD_ID_MAKEFILE)
+$(INSTALLED_BUILD_PROP_TARGET): $(BUILDINFO_SH) $(INTERNAL_BUILD_ID_MAKEFILE) $(wildcard $(TARGET_DEVICE_DIR)/system.prop)
 	@echo Target buildinfo: $@
 	@mkdir -p $(dir $@)
 	$(hide) TARGET_BUILD_TYPE="$(TARGET_BUILD_VARIANT)" \
@@ -210,8 +213,11 @@ $(APKCERTS_FILE): $(all_built_packages)
 	@mkdir -p $(dir $@)
 	@rm -f $@
 	$(hide) $(foreach p,$(PACKAGES),\
-	  echo 'name="$(p).apk" certificate="$(PACKAGES.$(p).CERTIFICATE)" \
-	       private_key="$(PACKAGES.$(p).PRIVATE_KEY)"' >> $@;)
+          $(if $(PACKAGES.$(p).EXTERNAL_KEY),\
+	    echo 'name="$(p).apk" certificate="EXTERNAL" \
+	         private_key=""' >> $@;,\
+	    echo 'name="$(p).apk" certificate="$(PACKAGES.$(p).CERTIFICATE)" \
+	         private_key="$(PACKAGES.$(p).PRIVATE_KEY)"' >> $@;))
 
 .PHONY: apkcerts-list
 apkcerts-list: $(APKCERTS_FILE)
@@ -243,6 +249,29 @@ DEFAULT_KEY_CERT_PAIR := $(SRC_TARGET_DIR)/product/security/testkey
 # if they don't do anything.
 .PHONY: systemimage
 systemimage:
+
+# -----------------------------------------------------------------
+
+.PHONY: event-log-tags
+
+event_log_tags_file := $(TARGET_OUT)/etc/event-log-tags
+ALL_PREBUILT += $(event_log_tag_file)
+
+# Include tags from all packages included in this product.
+event_log_tags_src := \
+    $(sort $(foreach m,\
+      $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES) \
+      $(call module-names-for-tag-list,user), \
+      $(ALL_MODULES.$(m).EVENT_LOG_TAGS)))
+
+$(event_log_tags_file): PRIVATE_SRC_FILES := $(event_log_tags_src)
+$(event_log_tags_file): $(event_log_tags_src)
+	$(hide) mkdir -p $(dir $@)
+	$(hide) build/tools/merge-event-log-tags.py -o $@ $(PRIVATE_SRC_FILES)
+
+event-log-tags: $(event_log_tags_file)
+
+ALL_DEFAULT_INSTALLED_MODULES += $(event_log_tags_file)
 
 ifneq ($(TARGET_SIMULATOR),true)
 
@@ -591,6 +620,13 @@ endif
 .PHONY: recoveryimage
 recoveryimage: $(INSTALLED_RECOVERYIMAGE_TARGET)
 
+ifneq ($(BOARD_NAND_PAGE_SIZE),)
+mkyaffs2_extra_flags := -c $(BOARD_NAND_PAGE_SIZE)
+else
+mkyaffs2_extra_flags :=
+endif
+
+
 # -----------------------------------------------------------------
 # system yaffs image
 #
@@ -622,7 +658,7 @@ else # TARGET_USERIMAGES_USE_EXT2 != true
 define build-systemimage-target
     @echo "Target system fs image: $(1)"
     @mkdir -p $(dir $(1))
-    $(hide) $(MKYAFFS2) -f $(TARGET_OUT) $(1)
+    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT) $(1)
 endef
 endif # TARGET_USERIMAGES_USE_EXT2
 
@@ -687,8 +723,12 @@ define build-systemtarball-target
 		$(INSTALLED_SYSTEMTARBALL_TARGET)
 endef
 
+ifndef SYSTEM_TARBALL_FORMAT
+    SYSTEM_TARBALL_FORMAT := bz2
+endif
+
 system_tar := $(PRODUCT_OUT)/system.tar
-INSTALLED_SYSTEMTARBALL_TARGET := $(system_tar).bz2
+INSTALLED_SYSTEMTARBALL_TARGET := $(system_tar).$(SYSTEM_TARBALL_FORMAT)
 $(INSTALLED_SYSTEMTARBALL_TARGET): PRIVATE_SYSTEM_TAR := $(system_tar)
 $(INSTALLED_SYSTEMTARBALL_TARGET): $(FS_GET_STATS) $(INTERNAL_SYSTEMIMAGE_FILES)
 	$(build-systemtarball-target)
@@ -700,6 +740,34 @@ systemtarball-nodeps: $(FS_GET_STATS) \
 
 .PHONY: stnod
 stnod: systemtarball-nodeps
+
+
+#######
+## boot tarball
+define build-boottarball-target
+    $(hide) echo "Target boot fs tarball: $(INSTALLED_BOOTTARBALL_TARGET)"
+    $(hide) mkdir -p $(PRODUCT_OUT)/boot
+    $(hide) cp -f $(INTERNAL_BOOTIMAGE_FILES) $(PRODUCT_OUT)/boot/.
+    $(hide) echo $(BOARD_KERNEL_CMDLINE) > $(PRODUCT_OUT)/boot/cmdline
+    $(hide) $(MKTARBALL) $(FS_GET_STATS) \
+                 $(PRODUCT_OUT) boot $(PRIVATE_BOOT_TAR) \
+                 $(INSTALLED_BOOTTARBALL_TARGET)
+endef
+
+ifndef BOOT_TARBALL_FORMAT
+    BOOT_TARBALL_FORMAT := bz2
+endif
+
+boot_tar := $(PRODUCT_OUT)/boot.tar
+INSTALLED_BOOTTARBALL_TARGET := $(boot_tar).$(BOOT_TARBALL_FORMAT)
+$(INSTALLED_BOOTTARBALL_TARGET): PRIVATE_BOOT_TAR := $(boot_tar)
+$(INSTALLED_BOOTTARBALL_TARGET): $(FS_GET_STATS) $(INTERNAL_BOOTIMAGE_FILES)
+	$(build-boottarball-target)
+
+.PHONY: boottarball-nodeps btnod
+boottarball-nodeps btnod: $(FS_GET_STATS) \
+                      $(filter-out boottarball-nodeps btnod,$(MAKECMDGOALS))
+	$(build-boottarball-target)
 
 
 # -----------------------------------------------------------------
@@ -722,7 +790,7 @@ else # TARGET_USERIMAGES_USE_EXT2 != true
 define build-userdataimage-target
     $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET)")
     @mkdir -p $(TARGET_OUT_DATA)
-    $(hide) $(MKYAFFS2) -f $(TARGET_OUT_DATA) $(INSTALLED_USERDATAIMAGE_TARGET)
+    $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT_DATA) $(INSTALLED_USERDATAIMAGE_TARGET)
     $(hide) $(call assert-max-image-size,$(INSTALLED_USERDATAIMAGE_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
 endef
 endif # TARGET_USERIMAGES_USE_EXT2
@@ -769,8 +837,7 @@ endif
 # -----------------------------------------------------------------
 # host tools needed to build OTA packages
 
-.PHONY: otatools
-otatools: $(HOST_OUT_EXECUTABLES)/minigzip \
+OTATOOLS :=  $(HOST_OUT_EXECUTABLES)/minigzip \
 	  $(HOST_OUT_EXECUTABLES)/mkbootfs \
 	  $(HOST_OUT_EXECUTABLES)/mkbootimg \
 	  $(HOST_OUT_EXECUTABLES)/fs_config \
@@ -781,6 +848,9 @@ otatools: $(HOST_OUT_EXECUTABLES)/minigzip \
 	  $(HOST_OUT_EXECUTABLES)/imgdiff \
 	  $(HOST_OUT_JAVA_LIBRARIES)/dumpkey.jar \
 	  $(HOST_OUT_JAVA_LIBRARIES)/signapk.jar
+
+.PHONY: otatools
+otatools: $(OTATOOLS)
 
 # -----------------------------------------------------------------
 # A zip of the directories that map to the target filesystem.
@@ -836,6 +906,7 @@ $(BUILT_TARGET_FILES_PACKAGE): \
 		$(INSTALLED_ANDROID_INFO_TXT_TARGET) \
 		$(built_ota_tools) \
 		$(APKCERTS_FILE) \
+		$(HOST_OUT_EXECUTABLES)/fs_config \
 		| $(ACP)
 	@echo "Package target files: $@"
 	$(hide) rm -rf $@ $(zip_root)
@@ -901,6 +972,10 @@ endif
 	$(hide) echo "$(tool_extensions)" > $(zip_root)/META/tool-extensions.txt
 	@# Zip everything up, preserving symlinks
 	$(hide) (cd $(zip_root) && zip -qry ../$(notdir $@) .)
+	@# Run fs_config on all the system files in the zip, and save the output
+	$(hide) zipinfo -1 $@ | awk -F/ 'BEGIN { OFS="/" } /^SYSTEM\// {$$1 = "system"; print}' | $(HOST_OUT_EXECUTABLES)/fs_config > $(zip_root)/META/filesystem_config.txt
+	$(hide) (cd $(zip_root) && zip -q ../$(notdir $@) META/filesystem_config.txt)
+
 
 target-files-package: $(BUILT_TARGET_FILES_PACKAGE)
 
@@ -909,7 +984,11 @@ target-files-package: $(BUILT_TARGET_FILES_PACKAGE)
 
 ifneq ($(TARGET_SIMULATOR),true)
 ifneq ($(TARGET_PRODUCT),sdk)
+<<<<<<< HEAD
 ifneq ($(TARGET_PRODUCT),generic)
+=======
+ifneq ($(TARGET_DEVICE),generic)
+>>>>>>> 1e80c294ffef26a6a7fe435411cd7557003b1d3f
 
 name := $(TARGET_PRODUCT)
 ifeq ($(TARGET_BUILD_TYPE),debug)
@@ -928,7 +1007,7 @@ else
 $(INTERNAL_OTA_PACKAGE_TARGET): scriptmode := $(TARGET_OTA_SCRIPT_MODE)
 endif
 
-$(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) otatools
+$(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
 	@echo "Package OTA: $@"
 	$(hide) ./build/tools/releasetools/ota_from_target_files \
 	   -m $(scriptmode) \
@@ -939,7 +1018,11 @@ $(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) otatools
 .PHONY: otapackage
 otapackage: $(INTERNAL_OTA_PACKAGE_TARGET)
 
+<<<<<<< HEAD
 endif    # TARGET_PRODUCT != generic
+=======
+endif    # TARGET_DEVICE != generic
+>>>>>>> 1e80c294ffef26a6a7fe435411cd7557003b1d3f
 endif    # TARGET_PRODUCT != sdk
 endif    # TARGET_SIMULATOR != true
 
@@ -1062,7 +1145,7 @@ else
 $(INTERNAL_UPDATE_PACKAGE_TARGET): extensions := $(TARGET_RELEASETOOLS_EXTENSIONS)
 endif
 
-$(INTERNAL_UPDATE_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) otatools
+$(INTERNAL_UPDATE_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
 	@echo "Package: $@"
 	$(hide) ./build/tools/releasetools/img_from_target_files \
 	   -s $(extensions) \
@@ -1157,10 +1240,12 @@ deps := \
 	$(target_notice_file_txt) \
 	$(tools_notice_file_txt) \
 	$(OUT_DOCS)/offline-sdk-timestamp \
+	$(SYMBOLS_ZIP) \
 	$(INSTALLED_SYSTEMIMAGE) \
 	$(INSTALLED_USERDATAIMAGE_TARGET) \
 	$(INSTALLED_RAMDISK_TARGET) \
 	$(INSTALLED_SDK_BUILD_PROP_TARGET) \
+	$(INSTALLED_BUILD_PROP_TARGET) \
 	$(ATREE_FILES) \
 	$(atree_dir)/sdk.atree \
 	$(HOST_OUT_EXECUTABLES)/atree \
@@ -1205,6 +1290,15 @@ $(INTERNAL_SDK_TARGET): $(deps)
 		chmod -R ug+rwX $(PRIVATE_DIR) && \
 		cd $(dir $@) && zip -rq $(notdir $@) $(PRIVATE_NAME) \
 	) || ( rm -rf $(PRIVATE_DIR) $@ && exit 44 )
+
+
+# Is a Windows SDK requested? If so, we need some definitions from here
+# in order to find the Linux SDK used to create the Windows one.
+ifneq ($(filter win_sdk,$(MAKECMDGOALS)),)
+LINUX_SDK_NAME := $(sdk_name)
+LINUX_SDK_DIR  := $(sdk_dir)
+include $(TOPDIR)development/build/tools/windows_sdk.mk
+endif
 
 endif # !simulator
 

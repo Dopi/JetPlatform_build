@@ -56,6 +56,7 @@ function check_product()
     CALLED_FROM_SETUP=true BUILD_SYSTEM=build/core \
         TARGET_PRODUCT=$1 TARGET_BUILD_VARIANT= \
         TARGET_SIMULATOR= TARGET_BUILD_TYPE= \
+        TARGET_BUILD_APPS= \
         get_build_var TARGET_DEVICE > /dev/null
     # hide successful answers, but allow the errors to show
 }
@@ -98,6 +99,9 @@ function setpaths()
     if [ -n $ANDROID_BUILD_PATHS ] ; then
         export PATH=${PATH/$ANDROID_BUILD_PATHS/}
     fi
+    if [ -n $ANDROID_PRE_BUILD_PATHS ] ; then
+        export PATH=${PATH/$ANDROID_PRE_BUILD_PATHS/}
+    fi
 
     # and in with the new
     CODE_REVIEWS=
@@ -107,6 +111,15 @@ function setpaths()
     export ANDROID_QTOOLS=$T/development/emulator/qtools
     export ANDROID_BUILD_PATHS=:$(get_build_var ANDROID_BUILD_PATHS):$ANDROID_QTOOLS:$ANDROID_TOOLCHAIN:$ANDROID_EABI_TOOLCHAIN$CODE_REVIEWS
     export PATH=$PATH$ANDROID_BUILD_PATHS
+
+    unset ANDROID_JAVA_TOOLCHAIN
+    if [ -n "$JAVA_HOME" ]; then
+        export ANDROID_JAVA_TOOLCHAIN=$JAVA_HOME/bin
+    fi
+    export ANDROID_PRE_BUILD_PATHS=$ANDROID_JAVA_TOOLCHAIN
+    if [ -n "$ANDROID_PRE_BUILD_PATHS" ]; then
+        export PATH=$ANDROID_PRE_BUILD_PATHS:$PATH
+    fi
 
     unset ANDROID_PRODUCT_OUT
     export ANDROID_PRODUCT_OUT=$(get_abs_build_var PRODUCT_OUT)
@@ -133,6 +146,7 @@ function printconfig()
 function set_stuff_for_environment()
 {
     settitle
+    set_java_home
     setpaths
     set_sequence_number
 
@@ -144,15 +158,20 @@ function set_stuff_for_environment()
 
 function set_sequence_number()
 {
-    export BUILD_ENV_SEQUENCE_NUMBER=9
+    export BUILD_ENV_SEQUENCE_NUMBER=10
 }
 
 function settitle()
 {
     if [ "$STAY_OFF_MY_LAWN" = "" ]; then
-        local product=$(get_build_var TARGET_PRODUCT)
-        local variant=$(get_build_var TARGET_BUILD_VARIANT)
-        export PROMPT_COMMAND="echo -ne \"\033]0;[${product}-${variant}] ${USER}@${HOSTNAME}: ${PWD}\007\""
+        local product=$TARGET_PRODUCT
+        local variant=$TARGET_BUILD_VARIANT
+        local apps=$TARGET_BUILD_APPS
+        if [ -z "$apps" ]; then
+            export PROMPT_COMMAND="echo -ne \"\033]0;[${product}-${variant}] ${USER}@${HOSTNAME}: ${PWD}\007\""
+        else
+            export PROMPT_COMMAND="echo -ne \"\033]0;[$apps $variant] ${USER}@${HOSTNAME}: ${PWD}\007\""
+        fi
     fi
 }
 
@@ -360,7 +379,7 @@ function choosevariant()
             export TARGET_BUILD_VARIANT=$default_value
         elif (echo -n $ANSWER | grep -q -e "^[0-9][0-9]*$") ; then
             if [ "$ANSWER" -le "${#VARIANT_CHOICES[@]}" ] ; then
-                export TARGET_BUILD_VARIANT=${VARIANT_CHOICES[$(($ANSWER-$_arrayoffset))]}
+                export TARGET_BUILD_VARIANT=${VARIANT_CHOICES[$(($ANSWER-1))]}
             fi
         else
             if check_variant $ANSWER
@@ -374,11 +393,6 @@ function choosevariant()
             break
         fi
     done
-}
-
-function tapas()
-{
-    choosecombo
 }
 
 function choosecombo()
@@ -418,7 +432,8 @@ function add_lunch_combo()
 }
 
 # add the default one here
-add_lunch_combo generic-eng
+add_lunch_combo full-eng
+add_lunch_combo full_x86-eng
 
 # if we're on linux, add the simulator.  There is a special case
 # in lunch to deal with the simulator
@@ -432,7 +447,6 @@ function print_lunch_menu()
     echo
     echo "You're building on" $uname
     echo
-    echo ${LUNCH_MENU_CHOICES[@]}
     echo "Lunch menu... pick a combo:"
 
     local i=1
@@ -470,7 +484,7 @@ function lunch()
     then
         if [ $answer -le ${#LUNCH_MENU_CHOICES[@]} ]
         then
-            selection=${LUNCH_MENU_CHOICES[$(($answer-$_arrayoffset))]}
+            selection=${LUNCH_MENU_CHOICES[$(($answer-1))]}
         fi
     elif (echo -n $answer | grep -q -e "^[^\-][^\-]*-[^\-][^\-]*$")
     then
@@ -483,6 +497,8 @@ function lunch()
         echo "Invalid lunch combo: $answer"
         return 1
     fi
+
+    export TARGET_BUILD_APPS=
 
     # special case the simulator
     if [ "$selection" = "simulator" ]
@@ -525,6 +541,34 @@ function lunch()
     fi # !simulator
 
     echo
+
+    set_stuff_for_environment
+    printconfig
+}
+
+# Configures the build to build unbundled apps.
+# Run tapas with one ore more app names (from LOCAL_PACKAGE_NAME)
+function tapas()
+{
+    local variant=$(echo -n $(echo $* | xargs -n 1 echo | grep -E '^(user|userdebug|eng)$'))
+    local apps=$(echo -n $(echo $* | xargs -n 1 echo | grep -E -v '^(user|userdebug|eng)$'))
+
+    if [ $(echo $variant | wc -w) -gt 1 ]; then
+        echo "tapas: Error: Multiple build variants supplied: $variant"
+        return
+    fi
+    if [ -z "$variant" ]; then
+        variant=eng
+    fi
+    if [ -z "$apps" ]; then
+        apps=all
+    fi
+
+    export TARGET_PRODUCT=generic
+    export TARGET_BUILD_VARIANT=$variant
+    export TARGET_SIMULATOR=false
+    export TARGET_BUILD_TYPE=release
+    export TARGET_BUILD_APPS=$apps
 
     set_stuff_for_environment
     printconfig
@@ -625,7 +669,8 @@ function mmm()
             if [ -f $DIR/Android.mk ]; then
                 TO_CHOP=`echo $T | wc -c | tr -d ' '`
                 TO_CHOP=`expr $TO_CHOP + 1`
-                MFILE=`echo $PWD | cut -c${TO_CHOP}-`
+                START=`PWD= /bin/pwd`
+                MFILE=`echo $START | cut -c${TO_CHOP}-`
                 if [ "$MFILE" = "" ] ; then
                     MFILE=$DIR/Android.mk
                 else
@@ -770,7 +815,7 @@ function jgrep()
 
 function cgrep()
 {
-    find . -type f -name "*\.c*" -print0 | xargs -0 grep --color -n "$@"
+    find . -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 grep --color -n "$@"
 }
 
 function resgrep()
@@ -985,9 +1030,10 @@ function godir () {
         echo "Usage: godir <regex>"
         return
     fi
+    T=$(gettop)
     if [[ ! -f $T/filelist ]]; then
         echo -n "Creating index..."
-        (cd $T; find . -wholename ./out -prune -o -type f > filelist)
+        (cd $T; find . -wholename ./out -prune -o -wholename ./.repo -prune -o -type f > filelist)
         echo " Done"
         echo ""
     fi
@@ -1015,27 +1061,38 @@ function godir () {
                 echo "Invalid choice"
                 continue
             fi
-            pathname=${lines[$(($choice-$_arrayoffset))]}
+            pathname=${lines[$(($choice-1))]}
         done
     else
-        # even though zsh arrays are 1-based, $foo[0] is an alias for $foo[1]
         pathname=${lines[0]}
     fi
     cd $T/$pathname
 }
 
-# determine whether arrays are zero-based (bash) or one-based (zsh)
-_xarray=(a b c)
-if [ -z "${_xarray[${#_xarray[@]}]}" ]
-then
-    _arrayoffset=1
-else
-    _arrayoffset=0
-fi
-unset _xarray
+# Force JAVA_HOME to point to java 1.6 if it isn't already set
+function set_java_home() {
+    if [ ! "$JAVA_HOME" ]; then
+        case `uname -s` in
+            Darwin)
+                export JAVA_HOME=/System/Library/Frameworks/JavaVM.framework/Versions/1.6/Home
+                ;;
+            *)
+                export JAVA_HOME=/usr/lib/jvm/java-6-sun
+                ;;
+        esac
+    fi
+}
+
+case `ps -o command -p $$` in
+    *bash*)
+        ;;
+    *)
+        echo "WARNING: Only bash is supported, use of other shell would lead to erroneous results"
+        ;;
+esac
 
 # Execute the contents of any vendorsetup.sh files we can find.
-for f in `/bin/ls vendor/*/vendorsetup.sh vendor/*/build/vendorsetup.sh 2> /dev/null`
+for f in `/bin/ls vendor/*/vendorsetup.sh vendor/*/*/vendorsetup.sh device/*/*/vendorsetup.sh 2> /dev/null`
 do
     echo "including $f"
     . $f

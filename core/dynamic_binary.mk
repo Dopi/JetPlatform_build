@@ -70,7 +70,7 @@ ifeq ($(LOCAL_COMPRESS_MODULE_SYMBOLS),true)
 $(error Symbol compression not yet supported.)
 compress_output := $(intermediates)/COMPRESSED-$(LOCAL_BUILT_MODULE_STEM)
 
-#TODO: write the real $(SOSLIM) rule.
+#TODO: write the real $(STRIPPER) rule.
 #TODO: define a rule to build TARGET_SYMBOL_FILTER_FILE, and
 #      make it depend on ALL_ORIGINAL_DYNAMIC_BINARIES.
 $(compress_output): $(compress_input) $(TARGET_SYMBOL_FILTER_FILE) | $(ACP)
@@ -90,6 +90,13 @@ prelink_input := $(compress_output)
 # for symbolic debugging;  the prelink step may move sections
 # around, so we have to use this version.
 prelink_output := $(LOCAL_UNSTRIPPED_PATH)/$(LOCAL_MODULE_SUBDIR)$(LOCAL_BUILT_MODULE_STEM)
+
+# Skip prelinker if it is FDO instrumentation build.
+ifneq ($(strip $(BUILD_FDO_INSTRUMENT)),)
+ifneq ($(LOCAL_NO_FDO_SUPPORT),true)
+LOCAL_PRELINK_MODULE := false
+endif
+endif
 
 ifeq ($(LOCAL_PRELINK_MODULE),true)
 $(prelink_output): $(prelink_input) $(TARGET_PRELINKER_MAP) $(APRIORI)
@@ -125,7 +132,7 @@ endif
 
 ifeq ($(LOCAL_STRIP_MODULE),true)
 # Strip the binary
-$(strip_output): $(strip_input) | $(SOSLIM)
+$(strip_output): $(strip_input) | $(TARGET_STRIP)
 	$(transform-to-stripped)
 else
 # Don't strip the binary, just copy it.  We can't skip this step

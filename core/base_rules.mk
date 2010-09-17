@@ -62,6 +62,13 @@ LOCAL_MODULE_TAGS := user
 #$(warning default tags: $(lastword $(filter-out config/% out/%,$(MAKEFILE_LIST))))
 endif
 
+# Only the tags mentioned in this test are expected to be set by module
+# makefiles. Anything else is either a typo or a source of unexpected
+# behaviors.
+ifneq ($(filter-out user debug eng tests optional samples shell_ash shell_mksh,$(LOCAL_MODULE_TAGS)),)
+$(warning unusual tags $(LOCAL_MODULE_TAGS) on $(LOCAL_MODULE) at $(LOCAL_PATH))
+endif
+
 # Add implicit tags.
 #
 # If the local directory or one of its parents contains a MODULE_LICENSE_GPL
@@ -94,9 +101,13 @@ ifneq ($(words $(LOCAL_MODULE_CLASS)),1)
   $(error $(LOCAL_PATH): LOCAL_MODULE_CLASS must contain exactly one word, not "$(LOCAL_MODULE_CLASS)")
 endif
 
-# Add a tag like "_class@APPS" to this module so that we can filter
-# based on the class.
-LOCAL_MODULE_TAGS += _class@$(LOCAL_MODULE_CLASS)
+# Those used to be implicitly ignored, but aren't any more.
+# As of 20100110 there are no apps with the user tag.
+ifeq ($(LOCAL_MODULE_CLASS),APPS)
+  ifneq ($(filter $(LOCAL_MODULE_TAGS),user),)
+    $(warning user tag on app $(LOCAL_MODULE) at $(LOCAL_PATH) - add your app to core.mk instead)
+  endif
+endif
 
 LOCAL_MODULE_PATH := $(strip $(LOCAL_MODULE_PATH))
 ifeq ($(LOCAL_MODULE_PATH),)
@@ -175,9 +186,18 @@ ifneq ($(strip $(aidl_sources)),)
 aidl_java_sources := $(patsubst %.aidl,%.java,$(addprefix $(intermediates.COMMON)/src/, $(aidl_sources)))
 aidl_sources := $(addprefix $(TOP_DIR)$(LOCAL_PATH)/, $(aidl_sources))
 
-$(aidl_java_sources): PRIVATE_AIDL_FLAGS := -b -I$(LOCAL_PATH) -I$(LOCAL_PATH)/src $(addprefix -I,$(LOCAL_AIDL_INCLUDES))
+aidl_preprocess_import :=
+LOCAL_SDK_VERSION:=$(strip $(LOCAL_SDK_VERSION))
+ifdef LOCAL_SDK_VERSION
+ifeq ($(LOCAL_SDK_VERSION),current)
+  aidl_preprocess_import := $(TARGET_OUT_COMMON_INTERMEDIATES)/framework.aidl
+else
+  aidl_preprocess_import := $(HISTORICAL_SDK_VERSIONS_ROOT)/$(LOCAL_SDK_VERSION)/framework.aidl
+endif # !current
+endif # LOCAL_SDK_VERSION
+$(aidl_java_sources): PRIVATE_AIDL_FLAGS := -b $(addprefix -p,$(aidl_preprocess_import)) -I$(LOCAL_PATH) -I$(LOCAL_PATH)/src $(addprefix -I,$(LOCAL_AIDL_INCLUDES))
 
-$(aidl_java_sources): $(intermediates.COMMON)/src/%.java: $(TOPDIR)$(LOCAL_PATH)/%.aidl $(PRIVATE_ADDITIONAL_DEPENDENCIES) $(AIDL)
+$(aidl_java_sources): $(intermediates.COMMON)/src/%.java: $(TOPDIR)$(LOCAL_PATH)/%.aidl $(PRIVATE_ADDITIONAL_DEPENDENCIES) $(AIDL) $(aidl_preprocess_import)
 	$(transform-aidl-to-java)
 -include $(aidl_java_sources:%.java=%.P)
 
@@ -186,11 +206,39 @@ aidl_java_sources :=
 endif
 
 ###########################################################
+## logtags: Add .logtags files to global list, emit java source
+###########################################################
+
+logtags_sources := $(filter %.logtags,$(LOCAL_SRC_FILES))
+
+ifneq ($(strip $(logtags_sources)),)
+
+event_log_tags := $(addprefix $(LOCAL_PATH)/,$(logtags_sources))
+
+# Emit a java source file with constants for the tags, if
+# LOCAL_MODULE_CLASS is "APPS" or "JAVA_LIBRARIES".
+ifneq ($(strip $(filter $(LOCAL_MODULE_CLASS),APPS JAVA_LIBRARIES)),)
+
+logtags_java_sources := $(patsubst %.logtags,%.java,$(addprefix $(intermediates.COMMON)/src/, $(logtags_sources)))
+logtags_sources := $(addprefix $(TOP_DIR)$(LOCAL_PATH)/, $(logtags_sources))
+
+$(logtags_java_sources): $(intermediates.COMMON)/src/%.java: $(TOPDIR)$(LOCAL_PATH)/%.logtags $(TARGET_OUT)/etc/event-log-tags
+	$(transform-logtags-to-java)
+
+endif
+
+else
+logtags_java_sources :=
+event_log_tags :=
+endif
+
+###########################################################
 ## Java: Compile .java files to .class
 ###########################################################
 #TODO: pull this into java.make once host and target are combined
 
-java_sources := $(addprefix $(TOP_DIR)$(LOCAL_PATH)/, $(filter %.java,$(LOCAL_SRC_FILES))) $(aidl_java_sources)
+java_sources := $(addprefix $(TOP_DIR)$(LOCAL_PATH)/, $(filter %.java,$(LOCAL_SRC_FILES))) $(aidl_java_sources) $(logtags_java_sources) \
+                $(filter %.java,$(LOCAL_GENERATED_SOURCES))
 all_java_sources := $(java_sources) $(addprefix $($(my_prefix)OUT_COMMON_INTERMEDIATES)/, $(filter %.java,$(LOCAL_INTERMEDIATE_SOURCES)))
 
 ## Java resources #########################################
@@ -274,8 +322,14 @@ $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_JAVA_OBJECTS := $(patsubst %.java,%.class
 ifeq ($(my_prefix),TARGET_)
 ifeq ($(LOCAL_SDK_VERSION),)
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_BOOTCLASSPATH := -bootclasspath $(call java-lib-files,core)
-endif
-endif
+else
+ifeq ($(LOCAL_SDK_VERSION),current)
+$(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_BOOTCLASSPATH := -bootclasspath $(call java-lib-files,android_stubs_current)
+else
+$(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_BOOTCLASSPATH := -bootclasspath $(call java-lib-files,sdk_v$(LOCAL_SDK_VERSION))
+endif # current
+endif # LOCAL_SDK_VERSION
+endif # TARGET_
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_RESOURCE_DIR := $(LOCAL_RESOURCE_DIR)
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_EXTRA_JAR_ARGS := $(extra_jar_args)
 $(LOCAL_INTERMEDIATE_TARGETS): PRIVATE_ASSET_DIR := $(LOCAL_ASSET_DIR)
@@ -292,9 +346,21 @@ ifdef LOCAL_IS_HOST_MODULE
 full_java_libs := $(addprefix $(HOST_OUT_JAVA_LIBRARIES)/,$(addsuffix $(COMMON_JAVA_PACKAGE_SUFFIX),$(LOCAL_JAVA_LIBRARIES)))
 full_java_lib_deps := $(full_java_libs)
 else
+ifdef LOCAL_SDK_VERSION
+ifneq ($(LOCAL_SDK_VERSION),current)
+full_java_libs := $(call java-lib-files,$(LOCAL_JAVA_LIBRARIES),$(LOCAL_IS_HOST_MODULE))
+# For prebuilt sdk versions, we can't depend on the javalib.jar but classes.jar.
+full_java_lib_deps := $(call java-lib-deps,$(filter-out sdk_v$(LOCAL_SDK_VERSION),$(LOCAL_JAVA_LIBRARIES)),$(LOCAL_IS_HOST_MODULE))
+full_java_lib_deps += $(call java-lib-files,sdk_v$(LOCAL_SDK_VERSION),$(LOCAL_IS_HOST_MODULE))
+else
 full_java_libs := $(call java-lib-files,$(LOCAL_JAVA_LIBRARIES),$(LOCAL_IS_HOST_MODULE))
 full_java_lib_deps := $(call java-lib-deps,$(LOCAL_JAVA_LIBRARIES),$(LOCAL_IS_HOST_MODULE))
-endif
+endif # !current
+else
+full_java_libs := $(call java-lib-files,$(LOCAL_JAVA_LIBRARIES),$(LOCAL_IS_HOST_MODULE))
+full_java_lib_deps := $(call java-lib-deps,$(LOCAL_JAVA_LIBRARIES),$(LOCAL_IS_HOST_MODULE))
+endif # LOCAL_SDK_VERSION
+endif # !LOCAL_IS_HOST_MODULE
 full_java_libs += $(full_static_java_libs) $(LOCAL_CLASSPATH)
 full_java_lib_deps += $(full_static_java_libs) $(LOCAL_CLASSPATH)
 
@@ -313,7 +379,8 @@ ifdef LOCAL_INSTRUMENTATION_FOR
   link_instr_intermediates_dir.COMMON := $(call intermediates-dir-for, \
       APPS,$(LOCAL_INSTRUMENTATION_FOR),,COMMON)
 
-  full_java_libs += $(link_instr_intermediates_dir.COMMON)/classes.jar
+  # link against the jar with full original names (before proguard processing).
+  full_java_libs += $(link_instr_intermediates_dir.COMMON)/classes-full-names.jar
 
   # We can't depend on the .jar file, so we depend on something that
   # depends on the jar file; the final built package file.
@@ -352,6 +419,8 @@ $(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_PATH:=$(LOCAL_PATH)
 $(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_POST_PROCESS_COMMAND:= $(LOCAL_POST_PROCESS_COMMAND)
 $(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_AAPT_FLAGS:= $(LOCAL_AAPT_FLAGS)
 $(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_JAVA_LIBRARIES:= $(LOCAL_JAVA_LIBRARIES)
+$(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_MANIFEST_PACKAGE_NAME:= $(LOCAL_MANIFEST_PACKAGE_NAME)
+$(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_INSTRUMENTATION_FOR_PACKAGE_NAME:= $(LOCAL_INSTRUMENTATION_FOR_PACKAGE_NAME)
 
 $(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_ALL_JAVA_LIBRARIES:= $(full_java_libs)
 $(LOCAL_INTERMEDIATE_TARGETS) : PRIVATE_IS_HOST_MODULE := $(LOCAL_IS_HOST_MODULE)
@@ -402,7 +471,9 @@ endif # !LOCAL_UNINSTALLABLE_MODULE
 # checked modules, use LOCAL_BUILT_MODULE.  This was old
 # behavior, so it should be a safe default.
 ifndef LOCAL_CHECKED_MODULE
-  LOCAL_CHECKED_MODULE := $(LOCAL_BUILT_MODULE)
+  ifndef LOCAL_SDK_VERSION
+    LOCAL_CHECKED_MODULE := $(LOCAL_BUILT_MODULE)
+  endif
 endif
 
 # If they request that this module not be checked, then don't.
@@ -420,6 +491,8 @@ ALL_MODULES += $(LOCAL_MODULE)
 
 # Don't use += on subvars, or else they'll end up being
 # recursively expanded.
+ALL_MODULES.$(LOCAL_MODULE).CLASS := \
+    $(ALL_MODULES.$(LOCAL_MODULE).CLASS) $(LOCAL_MODULE_CLASS)
 ALL_MODULES.$(LOCAL_MODULE).PATH := \
     $(ALL_MODULES.$(LOCAL_MODULE).PATH) $(LOCAL_PATH)
 ALL_MODULES.$(LOCAL_MODULE).TAGS := \
@@ -432,6 +505,8 @@ ALL_MODULES.$(LOCAL_MODULE).INSTALLED := \
     $(ALL_MODULES.$(LOCAL_MODULE).INSTALLED) $(LOCAL_INSTALLED_MODULE)
 ALL_MODULES.$(LOCAL_MODULE).REQUIRED := \
     $(ALL_MODULES.$(LOCAL_MODULE).REQUIRED) $(LOCAL_REQUIRED_MODULES)
+ALL_MODULES.$(LOCAL_MODULE).EVENT_LOG_TAGS := \
+    $(ALL_MODULES.$(LOCAL_MODULE).EVENT_LOG_TAGS) $(event_log_tags)
 
 ###########################################################
 ## Take care of LOCAL_MODULE_TAGS

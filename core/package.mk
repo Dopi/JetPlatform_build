@@ -25,6 +25,19 @@
 ## be set for you.
 ###########################################################
 
+
+# If this makefile is being read from within an inheritance,
+# use the new values.
+skip_definition:=
+ifdef LOCAL_PACKAGE_OVERRIDES
+  package_overridden := $(call set-inherited-package-variables)
+  ifeq ($(strip $(package_overridden)),)
+    skip_definition := true
+  endif
+endif
+
+ifndef skip_definition
+
 LOCAL_PACKAGE_NAME := $(strip $(LOCAL_PACKAGE_NAME))
 ifeq ($(LOCAL_PACKAGE_NAME),)
 $(error $(LOCAL_PATH): Package modules must define LOCAL_PACKAGE_NAME)
@@ -61,6 +74,11 @@ endif
 
 #$(warning $(LOCAL_PATH) $(LOCAL_PACKAGE_NAME) $(sort $(LOCAL_MODULE_TAGS)))
 
+ifeq ($(filter tests, $(LOCAL_MODULE_TAGS)),)
+# Force localization check if it's not tagged as tests.
+LOCAL_AAPT_FLAGS := $(LOCAL_AAPT_FLAGS) -z
+endif
+
 ifeq (,$(LOCAL_ASSET_DIR))
 LOCAL_ASSET_DIR := $(LOCAL_PATH)/assets
 endif
@@ -69,8 +87,10 @@ ifeq (,$(LOCAL_RESOURCE_DIR))
   LOCAL_RESOURCE_DIR := $(LOCAL_PATH)/res
 endif
 LOCAL_RESOURCE_DIR := \
-  $(wildcard $(addsuffix /$(LOCAL_RESOURCE_DIR), $(PRODUCT_PACKAGE_OVERLAYS))) \
-  $(wildcard $(addsuffix /$(LOCAL_RESOURCE_DIR), $(DEVICE_PACKAGE_OVERLAYS))) \
+  $(wildcard $(foreach dir, $(PRODUCT_PACKAGE_OVERLAYS), \
+    $(addprefix $(dir)/, $(LOCAL_RESOURCE_DIR)))) \
+  $(wildcard $(foreach dir, $(DEVICE_PACKAGE_OVERLAYS), \
+    $(addprefix $(dir)/, $(LOCAL_RESOURCE_DIR)))) \
   $(LOCAL_RESOURCE_DIR)
 
 # this is an app, so add the system libraries to the search path
@@ -111,10 +131,24 @@ endif
 
 LOCAL_BUILT_MODULE_STEM := package.apk
 
-proguard_options_file := $(package_expected_intermediates_COMMON)/proguard_options
-ifneq ($(strip $(LOCAL_PROGUARD_ENABLED)),custom)
-    LOCAL_PROGUARD_FLAGS := -include $(proguard_options_file) $(LOCAL_PROGUARD_FLAGS)
+LOCAL_PROGUARD_ENABLED:=$(strip $(LOCAL_PROGUARD_ENABLED))
+ifndef LOCAL_PROGUARD_ENABLED
+ifneq ($(filter user userdebug, $(TARGET_BUILD_VARIANT)),)
+    # turn on Proguard by default for user & userdebug build
+    LOCAL_PROGUARD_ENABLED :=full
 endif
+endif
+ifeq ($(LOCAL_PROGUARD_ENABLED),disabled)
+    # the package explicitly request to disable proguard.
+    LOCAL_PROGUARD_ENABLED :=
+endif
+proguard_options_file :=
+ifneq ($(LOCAL_PROGUARD_ENABLED),custom)
+ifneq ($(all_resources),)
+    proguard_options_file := $(package_expected_intermediates_COMMON)/proguard_options
+endif # all_resources
+endif # !custom
+LOCAL_PROGUARD_FLAGS := $(addprefix -include ,$(proguard_options_file)) $(LOCAL_PROGUARD_FLAGS)
 
 # The dex files go in the package, so we don't
 # want to install them separately for this module.
@@ -210,17 +244,24 @@ else
 # Most packages should link against the resources defined by framework-res.
 # Even if they don't have their own resources, they may use framework
 # resources.
+ifneq ($(filter-out current,$(LOCAL_SDK_VERSION)),)
+# for released sdk versions, the platform resources were built into android.jar.
+framework_res_package_export := \
+	$(HISTORICAL_SDK_VERSIONS_ROOT)/$(LOCAL_SDK_VERSION)/android.jar
+framework_res_package_export_deps := $(framework_res_package_export)
+else # LOCAL_SDK_VERSION
 framework_res_package_export := \
 	$(call intermediates-dir-for,APPS,framework-res,,COMMON)/package-export.apk
-$(LOCAL_INTERMEDIATE_TARGETS): \
-	PRIVATE_AAPT_INCLUDES := $(framework_res_package_export)
 # We can't depend directly on the export.apk file; it won't get its
 # PRIVATE_ vars set up correctly if we do.  Instead, depend on the
 # corresponding R.stamp file, which lists the export.apk as a dependency.
 framework_res_package_export_deps := \
 	$(dir $(framework_res_package_export))src/R.stamp
+endif # LOCAL_SDK_VERSION
 $(R_file_stamp): $(framework_res_package_export_deps)
-endif
+$(LOCAL_INTERMEDIATE_TARGETS): \
+	PRIVATE_AAPT_INCLUDES := $(framework_res_package_export)
+endif # LOCAL_NO_STANDARD_LIBRARIES
 
 ifneq ($(full_classes_jar),)
 $(LOCAL_BUILT_MODULE): PRIVATE_DEX_FILE := $(built_dex)
@@ -244,6 +285,15 @@ jni_shared_libraries := \
 ifeq ($(LOCAL_CERTIFICATE),)
     LOCAL_CERTIFICATE := testkey
 endif
+
+ifeq ($(LOCAL_CERTIFICATE),EXTERNAL)
+  # The special value "EXTERNAL" means that we will sign it with the
+  # default testkey, apply predexopt, but then expect the final .apk
+  # (after dexopting) to be signed by an outside tool.
+  LOCAL_CERTIFICATE := testkey
+  PACKAGES.$(LOCAL_PACKAGE_NAME).EXTERNAL_KEY := 1
+endif
+
 # If this is not an absolute certificate, assign it to a generic one.
 ifeq ($(dir $(strip $(LOCAL_CERTIFICATE))),./)
     LOCAL_CERTIFICATE := $(SRC_TARGET_DIR)/product/security/$(LOCAL_CERTIFICATE)
@@ -261,6 +311,10 @@ PACKAGES.$(LOCAL_PACKAGE_NAME).CERTIFICATE := $(certificate)
 # Define the rule to build the actual package.
 $(LOCAL_BUILT_MODULE): $(AAPT) | $(ZIPALIGN)
 $(LOCAL_BUILT_MODULE): PRIVATE_JNI_SHARED_LIBRARIES := $(jni_shared_libraries)
+ifneq ($(TARGET_BUILD_APPS),)
+    # Include all resources for unbundled apps.
+    $(LOCAL_BUILT_MODULE): PRODUCT_AAPT_CONFIG :=
+endif
 $(LOCAL_BUILT_MODULE): $(all_res_assets) $(jni_shared_libraries) $(full_android_manifest)
 	@echo "target Package: $(PRIVATE_MODULE) ($@)"
 	$(create-empty-package)
@@ -280,3 +334,5 @@ PACKAGES.$(LOCAL_PACKAGE_NAME).OVERRIDES := $(strip $(LOCAL_OVERRIDES_PACKAGES))
 PACKAGES.$(LOCAL_PACKAGE_NAME).RESOURCE_FILES := $(all_resources)
 
 PACKAGES := $(PACKAGES) $(LOCAL_PACKAGE_NAME)
+
+endif # skip_definition

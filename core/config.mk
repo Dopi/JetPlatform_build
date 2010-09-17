@@ -3,10 +3,20 @@
 # current configuration and platform, which
 # are not specific to what is being built.
 
+# Only use ANDROID_BUILD_SHELL to wrap around bash.
+# DO NOT use other shells such as zsh.
+ifdef ANDROID_BUILD_SHELL
+SHELL := $(ANDROID_BUILD_SHELL)
+else
 # Use bash, not whatever shell somebody has installed as /bin/sh
 # This is repeated from main.mk, since envsetup.sh runs this file
 # directly.
 SHELL := /bin/bash
+endif
+
+# Tell python not to spam the source tree with .pyc files.  This
+# only has an effect on python 2.6 and above.
+export PYTHONDONTWRITEBYTECODE := 1
 
 # Standard source directories.
 SRC_DOCS:= $(TOPDIR)docs
@@ -95,6 +105,9 @@ TARGET_COMPRESS_MODULE_SYMBOLS := false
 # Default is to prelink modules.
 TARGET_PRELINK_MODULE := true
 
+# Default shell is ash. Other possible value is mksh.
+TARGET_SHELL := ash
+
 # ###############################################################
 # Include sub-configuration files
 # ###############################################################
@@ -118,6 +131,7 @@ include $(BUILD_SYSTEM)/envsetup.mk
 board_config_mk := \
 	$(strip $(wildcard \
 		$(SRC_TARGET_DIR)/board/$(TARGET_DEVICE)/BoardConfig.mk \
+		device/*/$(TARGET_DEVICE)/BoardConfig.mk \
 		vendor/*/$(TARGET_DEVICE)/BoardConfig.mk \
 	))
 ifeq ($(board_config_mk),)
@@ -200,6 +214,10 @@ TUNE2FS := tune2fs
 E2FSCK := e2fsck
 JARJAR := java -jar $(HOST_OUT_JAVA_LIBRARIES)/jarjar.jar
 PROGUARD := external/proguard/bin/proguard.sh
+JAVATAGS := build/tools/java-event-log-tags.py
+
+# ACP is always for the build OS, not for the host OS
+ACP := $(BUILD_OUT_EXECUTABLES)/acp$(BUILD_EXECUTABLE_SUFFIX)
 
 # ACP is always for the build OS, not for the host OS
 ACP := $(BUILD_OUT_EXECUTABLES)/acp$(BUILD_EXECUTABLE_SUFFIX)
@@ -215,7 +233,6 @@ EMMA_JAR := external/emma/lib/emma$(COMMON_JAVA_PACKAGE_SUFFIX)
 # Binary prelinker/compressor tools
 APRIORI := $(HOST_OUT_EXECUTABLES)/apriori$(HOST_EXECUTABLE_SUFFIX)
 LSD := $(HOST_OUT_EXECUTABLES)/lsd$(HOST_EXECUTABLE_SUFFIX)
-SOSLIM := $(HOST_OUT_EXECUTABLES)/soslim$(HOST_EXECUTABLE_SUFFIX)
 
 # Deal with archaic version of bison on Mac OS X.
 ifeq ($(filter 1.28,$(shell $(YACC) -V)),)
@@ -297,31 +314,33 @@ TARGET_GLOBAL_CPPFLAGS += $(TARGET_RELEASE_CPPFLAGS)
 
 PREBUILT_IS_PRESENT := $(if $(wildcard prebuilt/Android.mk),true)
 
-
 # ###############################################################
 # Collect a list of the SDK versions that we could compile against
 # For use with the LOCAL_SDK_VERSION variable for include $(BUILD_PACKAGE)
 # ###############################################################
 
-# The files that we can convert into android.jars are are in config/api/*.xml
-# The 'current' version is whatever this source tree is.  Once the apicheck
-# tool can generate the stubs from the xml files, we'll use that to be
-# able to build back-versions.  In the meantime, 'current' is the only
-# one supported.
+HISTORICAL_SDK_VERSIONS_ROOT := $(TOPDIR)prebuilt/sdk
+
+# Historical SDK version N is stored in $(HISTORICAL_SDK_VERSIONS_ROOT)/N.
+# The 'current' version is whatever this source tree is.
 #
 # sgrax     is the opposite of xargs.  It takes the list of args and puts them
 #           on each line for sort to process.
 # sort -g   is a numeric sort, so 1 2 3 10 instead of 1 10 2 3.
-TARGET_AVAILABLE_SDK_VERSIONS := current \
-        $(shell function sgrax() { \
-                while [ -n "$$1" ] ; do echo $$1 ; shift ; done \
-            } ; \
-            ( sgrax $(patsubst $(SRC_API_DIR)/%.xml,%, \
-                $(filter-out $(SRC_API_DIR)/current.xml, \
-                $(shell find $(SRC_API_DIR) -name "*.xml"))) | sort -g ) )
 
+# Numerically sort a list of numbers
+# $(1): the list of numbers to be sorted
+define numerically_sort
+$(shell function sgrax() { \
+    while [ -n "$$1" ] ; do echo $$1 ; shift ; done \
+    } ; \
+    ( sgrax $(1) | sort -g ) )
+endef
+
+TARGET_AVAILABLE_SDK_VERSIONS := current $(call numerically_sort,\
+    $(patsubst $(HISTORICAL_SDK_VERSIONS_ROOT)/%/android.jar,%, \
+    $(wildcard $(HISTORICAL_SDK_VERSIONS_ROOT)/*/android.jar)))
 
 INTERNAL_PLATFORM_API_FILE := $(TARGET_OUT_COMMON_INTERMEDIATES)/PACKAGING/public_api.xml
 
-
-
+include $(BUILD_SYSTEM)/dumpvar.mk

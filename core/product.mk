@@ -23,18 +23,19 @@
 # $(call ) isn't necessary.
 #
 define _find-android-products-files
-$(shell test -d vendor && find vendor -maxdepth 6 -name AndroidProducts.mk) \
+$(shell test -d device && find device -maxdepth 6 -name AndroidProducts.mk) \
+  $(shell test -d vendor && find vendor -maxdepth 6 -name AndroidProducts.mk) \
   $(SRC_TARGET_DIR)/product/AndroidProducts.mk
 endef
 
 #
-# Returns the sorted concatenation of all PRODUCT_MAKEFILES
-# variables set in all AndroidProducts.mk files.
-# $(call ) isn't necessary.
+# Returns the sorted concatenation of PRODUCT_MAKEFILES
+# variables set in the given AndroidProducts.mk files.
+# $(1): the list of AndroidProducts.mk files.
 #
-define get-all-product-makefiles
+define get-product-makefiles
 $(sort \
-  $(foreach f,$(_find-android-products-files), \
+  $(foreach f,$(1), \
     $(eval PRODUCT_MAKEFILES :=) \
     $(eval LOCAL_DIR := $(patsubst %/,%,$(dir $(f)))) \
     $(eval include $(f)) \
@@ -43,6 +44,15 @@ $(sort \
   $(eval PRODUCT_MAKEFILES :=) \
   $(eval LOCAL_DIR :=) \
  )
+endef
+
+#
+# Returns the sorted concatenation of all PRODUCT_MAKEFILES
+# variables set in all AndroidProducts.mk files.
+# $(call ) isn't necessary.
+#
+define get-all-product-makefiles
+$(call get-product-makefiles,$(_find-android-products-files))
 endef
 
 #
@@ -98,6 +108,14 @@ define inherit-product
   $(eval $(inherit_var) := $(sort $($(inherit_var)) $(strip $(1)))) \
   $(eval inherit_var:=) \
   $(eval ALL_PRODUCTS := $(sort $(ALL_PRODUCTS) $(word 1,$(_include_stack))))
+endef
+
+
+#
+# Do inherit-product only if $(1) exists
+#
+define inherit-product-if-exists
+  $(if $(wildcard $(1)),$(call inherit-product,$(1)),)
 endef
 
 #

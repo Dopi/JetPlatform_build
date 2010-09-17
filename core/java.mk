@@ -20,7 +20,11 @@ ifneq ($(LOCAL_SDK_VERSION),)
       $(error $(LOCAL_PATH): Invalid LOCAL_SDK_VERSION '$(LOCAL_SDK_VERSION)' \
              Choices are: $(TARGET_AVAILABLE_SDK_VERSIONS))
     else
-      LOCAL_JAVA_LIBRARIES := android_stubs_$(LOCAL_SDK_VERSION) $(LOCAL_JAVA_LIBRARIES) 
+      ifeq ($(LOCAL_SDK_VERSION),current)
+        LOCAL_JAVA_LIBRARIES := android_stubs_$(LOCAL_SDK_VERSION) $(LOCAL_JAVA_LIBRARIES)
+      else
+        LOCAL_JAVA_LIBRARIES := sdk_v$(LOCAL_SDK_VERSION) $(LOCAL_JAVA_LIBRARIES)
+      endif
     endif
   endif
 else
@@ -70,6 +74,7 @@ emma_intermediates_dir := $(intermediates.COMMON)/emma_out
 full_classes_emma_jar := $(emma_intermediates_dir)/lib/$(full_classes_compiled_jar_leaf)
 full_classes_stubs_jar := $(intermediates.COMMON)/stubs.jar
 full_classes_jarjar_jar := $(intermediates.COMMON)/classes-jarjar.jar
+full_classes_full_names_jar := $(intermediates.COMMON)/classes-full-names.jar
 full_classes_proguard_jar := $(full_classes_jar)
 built_dex := $(intermediates.COMMON)/classes.dex
 
@@ -77,6 +82,7 @@ LOCAL_INTERMEDIATE_TARGETS += \
     $(full_classes_jar) \
     $(full_classes_compiled_jar) \
     $(full_classes_emma_jar) \
+    $(full_classes_full_names_jar) \
     $(full_classes_stubs_jar) \
     $(full_classes_jarjar_jar) \
     $(built_dex)
@@ -135,6 +141,7 @@ ALL_MODULES.$(LOCAL_MODULE).STUBS := $(full_classes_stubs_jar)
 # This intentionally depends on java_sources, not all_java_sources.
 # Deps for generated source files must be handled separately,
 # via deps on the target that generates the sources.
+$(full_classes_compiled_jar): PRIVATE_JAVACFLAGS := $(LOCAL_JAVACFLAGS)
 $(full_classes_compiled_jar): $(java_sources) $(full_java_lib_deps)
 	$(transform-java-to-classes.jar)
 
@@ -147,7 +154,7 @@ $(full_classes_compiled_jar): $(java_sources) $(full_java_lib_deps)
 # be done after the inclusion of base_rules.mk.
 ALL_MODULES.$(LOCAL_MODULE).CHECKED := $(full_classes_compiled_jar)
 
-ifneq ($(LOCAL_NO_EMMA_COMPILE),true) 
+ifneq ($(LOCAL_NO_EMMA_COMPILE),true)
 # If you instrument class files that have local variable debug information in
 # them emma does not correctly maintain the local variable table.
 # This will cause an error when you try to convert the class files for Android.
@@ -155,7 +162,7 @@ ifneq ($(LOCAL_NO_EMMA_COMPILE),true)
 # line and source debug information, not local information.
 $(full_classes_compiled_jar): PRIVATE_JAVAC_DEBUG_FLAGS := -g:{lines,source}
 else
-# when emma is off, compile with the default flags, which contain full debug 
+# when emma is off, compile with the default flags, which contain full debug
 # info
 $(full_classes_compiled_jar): PRIVATE_JAVAC_DEBUG_FLAGS := -g
 endif
@@ -171,9 +178,12 @@ $(full_classes_emma_jar): PRIVATE_EMMA_COVERAGE_FILE := $(intermediates.COMMON)/
 $(full_classes_emma_jar): PRIVATE_EMMA_INTERMEDIATES_DIR := $(emma_intermediates_dir)
 # this rule will generate both $(PRIVATE_EMMA_COVERAGE_FILE) and
 # $(full_classes_emma_jar)
-$(full_classes_emma_jar): $(full_classes_compiled_jar)
+$(full_classes_emma_jar): $(full_classes_compiled_jar) | $(EMMA_JAR)
 	$(transform-classes.jar-to-emma)
 $(PRIVATE_EMMA_COVERAGE_FILE): $(full_classes_emma_jar)
+
+# tell proguard to load emma jar
+LOCAL_PROGUARD_FLAGS := $(LOCAL_PROGUARD_FLAGS) $(addprefix -libraryjars ,$(EMMA_JAR))
 else
 $(full_classes_emma_jar): $(full_classes_compiled_jar) | $(ACP)
 	@echo Copying: $<
@@ -192,39 +202,55 @@ $(full_classes_jarjar_jar): $(full_classes_emma_jar) | $(ACP)
 	$(hide) $(ACP) $< $@
 endif
 
+# Keep a copy of the jar just before proguard processing.
+$(full_classes_full_names_jar): $(full_classes_emma_jar) | $(ACP)
+	@echo Copying: $@
+	$(hide) $(ACP) $< $@
+
 # Run proguard if necessary, otherwise just copy the file.  This is the last
 # part of this step, so the output of this command is full_classes_jar.
-ifneq ($(strip $(LOCAL_PROGUARD_ENABLED)),)
 proguard_dictionary := $(intermediates.COMMON)/proguard_dictionary
-proguard_flags := $(addprefix -libraryjars ,$(full_java_libs)) \
+# Proguard doesn't like a class in both library and the jar to be processed.
+proguard_full_java_libs := $(filter-out $(full_static_java_libs),$(full_java_libs))
+proguard_flags := $(addprefix -libraryjars ,$(proguard_full_java_libs)) \
                   -include $(BUILD_SYSTEM)/proguard.flags \
                   -forceprocessing \
                   -printmapping $(proguard_dictionary)
-ifeq ($(strip $(LOCAL_PROGUARD_ENABLED)),full)
+# If this is a test package, add proguard keep flags for tests.
+ifneq ($(strip $(LOCAL_INSTRUMENTATION_FOR)$(filter tests,$(LOCAL_MODULE_TAGS))$(filter android.test.runner,$(LOCAL_JAVA_LIBRARIES))),)
+proguard_flags := $(proguard_flags) -include $(BUILD_SYSTEM)/proguard_tests.flags
+endif # test package
+
+LOCAL_PROGUARD_ENABLED:=$(strip $(LOCAL_PROGUARD_ENABLED))
+ifeq ($(LOCAL_PROGUARD_ENABLED),disabled)
+    LOCAL_PROGUARD_ENABLED :=
+endif
+ifneq ($(LOCAL_PROGUARD_ENABLED),)
+ifeq ($(LOCAL_PROGUARD_ENABLED),full)
     # full
 else
-ifeq ($(strip $(LOCAL_PROGUARD_ENABLED)),optonly)
+ifeq ($(LOCAL_PROGUARD_ENABLED),optonly)
     # optonly
     proguard_flags += -dontobfuscate
 else
-ifeq ($(strip $(LOCAL_PROGUARD_ENABLED)),custom)
+ifeq ($(LOCAL_PROGUARD_ENABLED),custom)
     # custom
 else
     $(warning while processing: $(LOCAL_MODULE))
     $(error invalid value for LOCAL_PROGUARD_ENABLED: $(LOCAL_PROGUARD_ENABLED))
-endif
-endif
-endif
+endif # custom
+endif # optonly
+endif # full
+endif # LOCAL_PROGUARD_ENABLED
 
+$(full_classes_proguard_jar): PRIVATE_PROGUARD_ENABLED:=$(LOCAL_PROGUARD_ENABLED)
 $(full_classes_proguard_jar): PRIVATE_PROGUARD_FLAGS := $(proguard_flags) $(LOCAL_PROGUARD_FLAGS)
-$(full_classes_proguard_jar): $(full_classes_emma_jar) | $(PROGUARD)
-	@echo Proguard: $@
-	$(hide) $(PROGUARD) -injars $< -outjars $@ $(PRIVATE_PROGUARD_FLAGS)
-else
-$(full_classes_proguard_jar): $(full_classes_emma_jar) | $(ACP)
-	@echo Copying: $@
-	$(hide) $(ACP) $< $@
-endif
+$(full_classes_proguard_jar): PRIVATE_INSTRUMENTATION_FOR:=$(strip $(LOCAL_INSTRUMENTATION_FOR))
+
+$(full_classes_proguard_jar): $(full_classes_full_names_jar) | $(ACP) $(PROGUARD)
+	$(call transform-jar-to-proguard)
+
+ALL_MODULES.$(LOCAL_MODULE).PROGUARD_ENABLED:=$(LOCAL_PROGUARD_ENABLED)
 
 # Override PRIVATE_INTERMEDIATES_DIR so that install-dex-debug
 # will work even when intermediates != intermediates.COMMON.
