@@ -31,10 +31,10 @@ endif
 #endif
 
 # check for broken versions of make
-ifeq (0,$(shell expr $$(echo $(MAKE_VERSION) | sed "s/[^0-9\.].*//") \>= 3.81))
+ifeq (0,$(shell expr $$(echo $(MAKE_VERSION) | sed "s/[^0-9\.].*//") = 3.81))
 $(warning ********************************************************************************)
 $(warning *  You are using version $(MAKE_VERSION) of make.)
-$(warning *  You must upgrade to version 3.81 or greater.)
+$(warning *  Android can only be built by version 3.81.)
 $(warning *  see http://source.android.com/source/download.html)
 $(warning ********************************************************************************)
 $(error stopping)
@@ -60,11 +60,22 @@ include $(BUILD_SYSTEM)/config.mk
 # be generated correctly
 include $(BUILD_SYSTEM)/cleanbuild.mk
 
-VERSION_CHECK_SEQUENCE_NUMBER := 1
+VERSION_CHECK_SEQUENCE_NUMBER := 2
 -include $(OUT_DIR)/versions_checked.mk
 ifneq ($(VERSION_CHECK_SEQUENCE_NUMBER),$(VERSIONS_CHECKED))
 
 $(info Checking build tools versions...)
+
+ifeq ($(BUILD_OS),linux)
+build_arch := $(shell uname -m)
+ifneq (64,$(findstring 64,$(build_arch)))
+$(warning ************************************************************)
+$(warning You are attempting to build on a 32-bit system.)
+$(warning Only 64-bit build environments are supported beyond froyo/2.2.)
+$(warning ************************************************************)
+$(error stop)
+endif
+endif
 
 ifneq ($(HOST_OS),windows)
 ifneq ($(HOST_OS)-$(HOST_ARCH),darwin-ppc)
@@ -137,7 +148,7 @@ endif
 # These are the modifier targets that don't do anything themselves, but
 # change the behavior of the build.
 # (must be defined before including definitions.make)
-INTERNAL_MODIFIER_TARGETS := showcommands checkbuild
+INTERNAL_MODIFIER_TARGETS := showcommands checkbuild all
 
 # Bring in standard build system definitions.
 include $(BUILD_SYSTEM)/definitions.mk
@@ -263,7 +274,7 @@ else # !sdk
 endif
 
 # build the full stagefright library
-ifneq ($(strip BUILD_WITH_FULL_STAGEFRIGHT),)
+ifneq ($(strip $(BUILD_WITH_FULL_STAGEFRIGHT)),)
 BUILD_WITH_FULL_STAGEFRIGHT := true
 endif
 
@@ -403,9 +414,9 @@ subdirs += \
 	sdk/apkbuilder \
 	sdk/ddms \
 	sdk/hierarchyviewer2 \
+	sdk/ide_common \
 	sdk/jarutils \
 	sdk/layoutlib_api \
-	sdk/layoutlib_utils \
 	sdk/layoutopt \
 	sdk/ninepatch \
 	sdk/sdkstats \
