@@ -106,7 +106,7 @@ function setpaths()
     # and in with the new
     CODE_REVIEWS=
     prebuiltdir=$(getprebuilt)
-    export ANDROID_EABI_TOOLCHAIN=$prebuiltdir/toolchain/arm-eabi-4.4.0/bin
+    export ANDROID_EABI_TOOLCHAIN=$prebuiltdir/toolchain/arm-eabi-4.4.3/bin
     export ANDROID_TOOLCHAIN=$ANDROID_EABI_TOOLCHAIN
     export ANDROID_QTOOLS=$T/development/emulator/qtools
     export ANDROID_BUILD_PATHS=:$(get_build_var ANDROID_BUILD_PATHS):$ANDROID_QTOOLS:$ANDROID_TOOLCHAIN:$ANDROID_EABI_TOOLCHAIN$CODE_REVIEWS
@@ -149,9 +149,6 @@ function set_stuff_for_environment()
     set_java_home
     setpaths
     set_sequence_number
-
-    # Don't try to do preoptimization until it works better on OSX.
-    export DISABLE_DEXPREOPT=true
 
     export ANDROID_BUILD_TOP=$(gettop)
 }
@@ -314,7 +311,7 @@ function chooseproduct()
         if [ "$TARGET_SIMULATOR" = true ] ; then
             default_value=sim
         else
-            default_value=generic
+            default_value=full
         fi
     fi
 
@@ -468,7 +465,7 @@ function lunch()
         answer=$1
     else
         print_lunch_menu
-        echo -n "Which would you like? [generic-eng] "
+        echo -n "Which would you like? [full-eng] "
         read answer
     fi
 
@@ -476,7 +473,7 @@ function lunch()
 
     if [ -z "$answer" ]
     then
-        selection=generic-eng
+        selection=full-eng
     elif [ "$answer" = "simulator" ]
     then
         selection=simulator
@@ -564,7 +561,7 @@ function tapas()
         apps=all
     fi
 
-    export TARGET_PRODUCT=generic
+    export TARGET_PRODUCT=full
     export TARGET_BUILD_VARIANT=$variant
     export TARGET_SIMULATOR=false
     export TARGET_BUILD_TYPE=release
@@ -650,7 +647,7 @@ function mm()
         elif [ ! "$M" ]; then
             echo "Couldn't locate a makefile from the current directory."
         else
-            ONE_SHOT_MAKEFILE=$M make -C $T files $@
+            ONE_SHOT_MAKEFILE=$M make -C $T all_modules $@
         fi
     fi
 }
@@ -667,7 +664,7 @@ function mmm()
         for DIR in $DIRS ; do
             DIR=`echo $DIR | sed -e 's:/$::'`
             if [ -f $DIR/Android.mk ]; then
-                TO_CHOP=`echo $T | wc -c | tr -d ' '`
+                TO_CHOP=`(cd -P -- $T && pwd -P) | wc -c | tr -d ' '`
                 TO_CHOP=`expr $TO_CHOP + 1`
                 START=`PWD= /bin/pwd`
                 MFILE=`echo $START | cut -c${TO_CHOP}-`
@@ -682,13 +679,15 @@ function mmm()
                     ARGS="$ARGS snod"
                 elif [ "$DIR" = showcommands ]; then
                     ARGS="$ARGS showcommands"
+                elif [ "$DIR" = dist ]; then
+                    ARGS="$ARGS dist"
                 else
                     echo "No Android.mk in $DIR."
                     return 1
                 fi
             fi
         done
-        ONE_SHOT_MAKEFILE="$MAKEFILE" make -C $T $DASH_ARGS files $ARGS
+        ONE_SHOT_MAKEFILE="$MAKEFILE" make -C $T $DASH_ARGS all_modules $ARGS
     else
         echo "Couldn't locate the top of the tree.  Try setting TOP."
     fi

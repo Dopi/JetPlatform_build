@@ -50,6 +50,10 @@ BUILD_SYSTEM := $(TOPDIR)build/core
 DEFAULT_GOAL := droid
 $(DEFAULT_GOAL):
 
+# Used to force goals to build.  Only use for conditionally defined goals.
+.PHONY: FORCE
+FORCE:
+
 # Set up various standard variables based on configuration
 # and host information.
 include $(BUILD_SYSTEM)/config.mk
@@ -153,6 +157,9 @@ INTERNAL_MODIFIER_TARGETS := showcommands checkbuild all
 # Bring in standard build system definitions.
 include $(BUILD_SYSTEM)/definitions.mk
 
+# Bring in dex_preopt.mk
+include $(BUILD_SYSTEM)/dex_preopt.mk
+
 ifneq ($(filter eng user userdebug tests,$(MAKECMDGOALS)),)
 $(info ***************************************************************)
 $(info ***************************************************************)
@@ -213,16 +220,19 @@ ifneq (,$(user_variant))
     # Disable debugging in plain user builds.
     enable_target_debugging :=
   endif
- 
-  # TODO: Always set WITH_DEXPREOPT (for user builds) once it works on OSX.
-  # Also, remove the corresponding block in config/product_config.make.
+
+  # TODO: Remove this and the corresponding block in
+  # config/product_config.make once host-based Dalvik preoptimization is
+  # working.
+  ifneq (true,$(DISABLE_DEXPREOPT))
   ifeq ($(HOST_OS)-$(WITH_DEXPREOPT_buildbot),linux-true)
     WITH_DEXPREOPT := true
   endif
-  
+  endif
+
   # Disallow mock locations by default for user builds
   ADDITIONAL_DEFAULT_PROPERTIES += ro.allow.mock.location=0
-  
+
 else # !user_variant
   # Turn on checkjni for non-user builds.
   ADDITIONAL_BUILD_PROPERTIES += ro.kernel.android.checkjni=1
@@ -273,10 +283,7 @@ ADDITIONAL_BUILD_PROPERTIES += ro.config.nocheckin=yes
 else # !sdk
 endif
 
-# build the full stagefright library
-ifneq ($(strip $(BUILD_WITH_FULL_STAGEFRIGHT)),)
-BUILD_WITH_FULL_STAGEFRIGHT := true
-endif
+BUILD_WITHOUT_PV := true
 
 ## precise GC ##
 
@@ -697,6 +704,13 @@ droidcore: files \
 	$(INSTALLED_USERDATAIMAGE_TARGET) \
 	$(INSTALLED_FILES_FILE)
 
+ifeq ($(EMMA_INSTRUMENT),true)
+  $(call dist-for-goals, droid, $(EMMA_META_ZIP))
+endif
+
+# dist_libraries only for putting your library into the dist directory with a full build.
+.PHONY: dist_libraries
+
 ifneq ($(TARGET_BUILD_APPS),)
   # If this build is just for apps, only build apps and not the full system by default.
 
@@ -730,27 +744,21 @@ else # TARGET_BUILD_APPS
     $(INSTALLED_BUILD_PROP_TARGET) \
     $(BUILT_TARGET_FILES_PACKAGE) \
     $(INSTALLED_ANDROID_INFO_TXT_TARGET) \
+    $(INSTALLED_RAMDISK_TARGET) \
    )
-
-  # Tests are installed in userdata.img.  If we're building the tests
-  # variant, copy it for "make tests dist".  Also copy a zip of the
-  # contents of userdata.img, so that people can easily extract a
-  # single .apk.
-  ifeq ($(TARGET_BUILD_VARIANT),tests)
-  $(call dist-for-goals, droid, \
-    $(INSTALLED_USERDATAIMAGE_TARGET) \
-    $(BUILT_TESTS_ZIP_PACKAGE) \
-   )
-  endif
 
 # Building a full system-- the default is to build droidcore
-droid: droidcore
+droid: droidcore dist_libraries
 
-endif # TARGET_BUILD_APPS
+endif
 
 
 .PHONY: droid tests
 tests: droidcore
+
+# phony target that include any targets in $(ALL_MODULES)
+.PHONY: all_modules
+all_modules: $(ALL_MODULES)
 
 .PHONY: docs
 docs: $(ALL_DOCS)
@@ -767,22 +775,12 @@ $(call dist-for-goals,sdk, \
 findbugs: $(INTERNAL_FINDBUGS_HTML_TARGET) $(INTERNAL_FINDBUGS_XML_TARGET)
 
 .PHONY: clean
-dirs_to_clean := \
-	$(PRODUCT_OUT) \
-	$(TARGET_COMMON_OUT_ROOT) \
-	$(HOST_OUT) \
-	$(HOST_COMMON_OUT_ROOT)
 clean:
-	@for dir in $(dirs_to_clean) ; do \
-	    echo "Cleaning $$dir..."; \
-	    rm -rf $$dir; \
-	done
-	@echo "Clean."; \
-
-.PHONY: clobber
-clobber:
 	@rm -rf $(OUT_DIR)
 	@echo "Entire build directory removed."
+
+.PHONY: clobber
+clobber: clean
 
 # The rules for dataclean and installclean are defined in cleanbuild.mk.
 

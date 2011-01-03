@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2008 The Android Open Source Project
+# Copyright (C) 2009 The Android Open Source Project
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,17 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-LOCAL_PATH := $(my-dir)
-include $(CLEAR_VARS)
 
-LOCAL_SRC_FILES := \
-	main.c
+# This is a build configuration for the product aspects that
+# are specific to the emulator.
 
-# Just for adler32()
-LOCAL_C_INCLUDES := external/zlib
-LOCAL_SHARED_LIBRARIES := libz
+PRODUCT_PROPERTY_OVERRIDES := \
+    ro.ril.hsxpa=1 \
+    ro.ril.gprsclass=10
 
-LOCAL_MODULE := afar
-LOCAL_MODULE_TAGS := optional
-
-include $(BUILD_EXECUTABLE)
+PRODUCT_COPY_FILES := \
+    development/data/etc/apns-conf.xml:system/etc/apns-conf.xml \
+    development/data/etc/vold.conf:system/etc/vold.conf

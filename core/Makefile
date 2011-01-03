@@ -75,7 +75,7 @@ $(INSTALLED_BUILD_PROP_TARGET): PRIVATE_BUILD_DESC := $(build_desc)
 
 # The string used to uniquely identify this build;  used by the OTA server.
 ifeq (,$(strip $(BUILD_FINGERPRINT)))
-  BUILD_FINGERPRINT := $(PRODUCT_BRAND)/$(TARGET_PRODUCT)/$(TARGET_DEVICE)/$(TARGET_BOOTLOADER_BOARD_NAME):$(PLATFORM_VERSION)/$(BUILD_ID)/$(BUILD_NUMBER):$(TARGET_BUILD_VARIANT)/$(BUILD_VERSION_TAGS)
+  BUILD_FINGERPRINT := $(PRODUCT_BRAND)/$(TARGET_PRODUCT)/$(TARGET_DEVICE):$(PLATFORM_VERSION)/$(BUILD_ID)/$(BUILD_NUMBER):$(TARGET_BUILD_VARIANT)/$(BUILD_VERSION_TAGS)
 endif
 ifneq ($(words $(BUILD_FINGERPRINT)),1)
   $(error BUILD_FINGERPRINT cannot contain spaces: "$(BUILD_FINGERPRINT)")
@@ -208,7 +208,12 @@ APKCERTS_FILE := $(intermediates)/$(name).txt
 # but it should guarantee that the apkcerts file is rebuilt
 # if any packages change which certs they're signed with.
 all_built_packages := $(foreach p,$(PACKAGES),$(ALL_MODULES.$(p).BUILT))
+ifneq ($(TARGET_BUILD_APPS),)
+# We don't need to really build all the modules for apps_only build.
+$(APKCERTS_FILE):
+else
 $(APKCERTS_FILE): $(all_built_packages)
+endif
 	@echo APK certs list: $@
 	@mkdir -p $(dir $@)
 	@rm -f $@
@@ -221,6 +226,8 @@ $(APKCERTS_FILE): $(all_built_packages)
 
 .PHONY: apkcerts-list
 apkcerts-list: $(APKCERTS_FILE)
+
+$(call dist-for-goals, apps_only, $(APKCERTS_FILE):apkcerts.txt)
 
 # -----------------------------------------------------------------
 # module info file
@@ -254,8 +261,23 @@ systemimage:
 
 .PHONY: event-log-tags
 
+# Produce an event logs tag file for everything we know about, in order
+# to properly allocate numbers.  Then produce a file that's filtered
+# for what's going to be installed.
+
+all_event_log_tags_file := $(TARGET_OUT_COMMON_INTERMEDIATES)/all-event-log-tags.txt
+
+# Include tags from all packages that we know about
+all_event_log_tags_src := \
+    $(sort $(foreach m, $(ALL_MODULES), $(ALL_MODULES.$(m).EVENT_LOG_TAGS)))
+
+$(all_event_log_tags_file): PRIVATE_SRC_FILES := $(all_event_log_tags_src)
+$(all_event_log_tags_file): $(all_event_log_tags_src)
+	$(hide) mkdir -p $(dir $@)
+	$(hide) build/tools/merge-event-log-tags.py -o $@ $(PRIVATE_SRC_FILES)
+
+
 event_log_tags_file := $(TARGET_OUT)/etc/event-log-tags
-ALL_PREBUILT += $(event_log_tag_file)
 
 # Include tags from all packages included in this product.
 event_log_tags_src := \
@@ -265,13 +287,15 @@ event_log_tags_src := \
       $(ALL_MODULES.$(m).EVENT_LOG_TAGS)))
 
 $(event_log_tags_file): PRIVATE_SRC_FILES := $(event_log_tags_src)
-$(event_log_tags_file): $(event_log_tags_src)
+$(event_log_tags_file): PRIVATE_MERGED_FILE := $(all_event_log_tags_file)
+$(event_log_tags_file): $(event_log_tags_src) $(all_event_log_tags_file)
 	$(hide) mkdir -p $(dir $@)
-	$(hide) build/tools/merge-event-log-tags.py -o $@ $(PRIVATE_SRC_FILES)
+	$(hide) build/tools/merge-event-log-tags.py -o $@ -m $(PRIVATE_MERGED_FILE) $(PRIVATE_SRC_FILES)
 
 event-log-tags: $(event_log_tags_file)
 
 ALL_DEFAULT_INSTALLED_MODULES += $(event_log_tags_file)
+
 
 ifneq ($(TARGET_SIMULATOR),true)
 
@@ -315,6 +339,11 @@ endif
 BOARD_KERNEL_BASE := $(strip $(BOARD_KERNEL_BASE))
 ifdef BOARD_KERNEL_BASE
   INTERNAL_BOOTIMAGE_ARGS += --base $(BOARD_KERNEL_BASE)
+endif
+
+BOARD_KERNEL_PAGESIZE := $(strip $(BOARD_KERNEL_PAGESIZE))
+ifdef BOARD_KERNEL_PAGESIZE
+  INTERNAL_BOOTIMAGE_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
 endif
 
 INSTALLED_BOOTIMAGE_TARGET := $(PRODUCT_OUT)/boot.img
@@ -524,11 +553,42 @@ otacerts: $(TARGET_OUT_ETC)/security/otacerts.zip
 # Targets for user images
 # #################################################################
 
+INTERNAL_USERIMAGES_EXT_VARIANT :=
 ifeq ($(TARGET_USERIMAGES_USE_EXT2),true)
-include external/genext2fs/Config.mk
-INTERNAL_MKUSERFS := $(MKEXT2IMG)
+INTERNAL_USERIMAGES_USE_EXT := true
+INTERNAL_USERIMAGES_EXT_VARIANT := ext2
 else
-INTERNAL_MKUSERFS := $(MKYAFFS2)
+ifeq ($(TARGET_USERIMAGES_USE_EXT3),true)
+INTERNAL_USERIMAGES_USE_EXT := true
+INTERNAL_USERIMAGES_EXT_VARIANT := ext3
+else
+ifeq ($(TARGET_USERIMAGES_USE_EXT4),true)
+INTERNAL_USERIMAGES_USE_EXT := true
+INTERNAL_USERIMAGES_EXT_VARIANT := ext4
+endif
+endif
+endif
+
+ifneq (true,$(TARGET_USERIMAGES_SPARSE_EXT_DISABLED))
+  INTERNAL_USERIMAGES_SPARSE_EXT_FLAG := -s
+endif
+
+ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
+INTERNAL_USERIMAGES_DEPS := $(MKEXTUSERIMG) $(MAKE_EXT4FS)
+INTERNAL_USERIMAGES_BINARY_PATHS := $(sort $(dir $(INTERNAL_USERIMAGES_DEPS)))
+
+# $(1): src directory
+# $(2): output file
+# $(3): mount point
+# $(4): ext variant (ext2, ext3, ext4)
+# $(5): size of the partition
+define build-userimage-ext-target
+  @mkdir -p $(dir $(2))
+  $(hide) PATH=$(foreach p,$(INTERNAL_USERIMAGES_BINARY_PATHS),$(p):)$(PATH) \
+	  $(MKEXTUSERIMG) $(INTERNAL_USERIMAGES_SPARSE_EXT_FLAG) $(1) $(2) $(4) $(3) $(5)
+endef
+else
+INTERNAL_USERIMAGES_DEPS := $(MKYAFFS2)
 endif
 
 # -----------------------------------------------------------------
@@ -548,9 +608,14 @@ recovery_resources_common := $(call include-path-for, recovery)/res
 recovery_resources_private := $(strip $(wildcard $(TARGET_DEVICE_DIR)/recovery/res))
 recovery_resource_deps := $(shell find $(recovery_resources_common) \
   $(recovery_resources_private) -type f)
+recovery_fstab := $(strip $(wildcard $(TARGET_DEVICE_DIR)/recovery.fstab))
 
 ifeq ($(recovery_resources_private),)
   $(info No private recovery resources for TARGET_DEVICE $(TARGET_DEVICE))
+endif
+
+ifeq ($(recovery_fstab),)
+  $(info No recovery.fstab for TARGET_DEVICE $(TARGET_DEVICE))
 endif
 
 INTERNAL_RECOVERYIMAGE_ARGS := \
@@ -564,6 +629,10 @@ ifdef BOARD_KERNEL_CMDLINE
 endif
 ifdef BOARD_KERNEL_BASE
   INTERNAL_RECOVERYIMAGE_ARGS += --base $(BOARD_KERNEL_BASE)
+endif
+BOARD_KERNEL_PAGESIZE := $(strip $(BOARD_KERNEL_PAGESIZE))
+ifdef BOARD_KERNEL_PAGESIZE
+  INTERNAL_RECOVERYIMAGE_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
 endif
 
 # Keys authorized to sign OTA packages this build will accept.  The
@@ -590,6 +659,7 @@ $(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTFS) $(MKBOOTIMG) $(MINIGZIP) \
 		$(recovery_initrc) $(recovery_kernel) \
 		$(INSTALLED_2NDBOOTLOADER_TARGET) \
 		$(recovery_build_prop) $(recovery_resource_deps) \
+		$(recovery_fstab) \
 		$(RECOVERY_INSTALL_OTA_KEYS)
 	@echo ----- Making recovery image ------
 	rm -rf $(TARGET_RECOVERY_OUT)
@@ -599,12 +669,15 @@ $(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTFS) $(MKBOOTIMG) $(MINIGZIP) \
 	mkdir -p $(TARGET_RECOVERY_ROOT_OUT)/tmp
 	echo Copying baseline ramdisk...
 	cp -R $(TARGET_ROOT_OUT) $(TARGET_RECOVERY_OUT)
+	rm $(TARGET_RECOVERY_ROOT_OUT)/init*.rc
 	echo Modifying ramdisk contents...
 	cp -f $(recovery_initrc) $(TARGET_RECOVERY_ROOT_OUT)/
 	cp -f $(recovery_binary) $(TARGET_RECOVERY_ROOT_OUT)/sbin/
 	cp -rf $(recovery_resources_common) $(TARGET_RECOVERY_ROOT_OUT)/
 	$(foreach item,$(recovery_resources_private), \
 	  cp -rf $(item) $(TARGET_RECOVERY_ROOT_OUT)/)
+	$(foreach item,$(recovery_fstab), \
+	  cp -f $(item) $(TARGET_RECOVERY_ROOT_OUT)/etc/recovery.fstab)
 	cp $(RECOVERY_INSTALL_OTA_KEYS) $(TARGET_RECOVERY_ROOT_OUT)/res/keys
 	cat $(INSTALLED_DEFAULT_PROP_TARGET) $(recovery_build_prop) \
 	        > $(TARGET_RECOVERY_ROOT_OUT)/default.prop
@@ -624,22 +697,21 @@ ifneq ($(BOARD_NAND_PAGE_SIZE),)
 mkyaffs2_extra_flags := -c $(BOARD_NAND_PAGE_SIZE)
 else
 mkyaffs2_extra_flags :=
+BOARD_NAND_PAGE_SIZE := 2048
 endif
 
 ifneq ($(BOARD_NAND_SPARE_SIZE),)
 mkyaffs2_extra_flags += -s $(BOARD_NAND_SPARE_SIZE)
+else
+BOARD_NAND_SPARE_SIZE := 64
 endif
 
-
 # -----------------------------------------------------------------
-# system yaffs image
+# system image
 #
-# First, the "unoptimized" image, which contains .apk/.jar files
-# that contain regular, unoptimized/unverified .dex entries.
-#
-systemimage_unopt_intermediates := \
-	$(call intermediates-dir-for,PACKAGING,systemimage_unopt)
-BUILT_SYSTEMIMAGE_UNOPT := $(systemimage_unopt_intermediates)/system.img
+systemimage_intermediates := \
+	$(call intermediates-dir-for,PACKAGING,systemimage)
+BUILT_SYSTEMIMAGE := $(systemimage_intermediates)/system.img
 
 INTERNAL_SYSTEMIMAGE_FILES := $(filter $(TARGET_OUT)/%, \
 	$(ALL_PREBUILT) \
@@ -647,15 +719,15 @@ INTERNAL_SYSTEMIMAGE_FILES := $(filter $(TARGET_OUT)/%, \
 	$(ALL_GENERATED_SOURCES) \
 	$(ALL_DEFAULT_INSTALLED_MODULES))
 
-ifeq ($(TARGET_USERIMAGES_USE_EXT2),true)
+ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
 ## generate an ext2 image
 # $(1): output file
 define build-systemimage-target
     @echo "Target system fs image: $(1)"
-    $(call build-userimage-ext2-target,$(TARGET_OUT),$(1),system,)
+    $(call build-userimage-ext-target,$(TARGET_OUT),$(1),system,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_SYSTEMIMAGE_PARTITION_SIZE))
 endef
 
-else # TARGET_USERIMAGES_USE_EXT2 != true
+else # INTERNAL_USERIMAGES_USE_EXT != true
 
 ## generate a yaffs2 image
 # $(1): output file
@@ -664,27 +736,13 @@ define build-systemimage-target
     @mkdir -p $(dir $(1))
     $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT) $(1)
 endef
-endif # TARGET_USERIMAGES_USE_EXT2
+endif # INTERNAL_USERIMAGES_USE_EXT
 
-$(BUILT_SYSTEMIMAGE_UNOPT): $(INTERNAL_SYSTEMIMAGE_FILES) $(INTERNAL_MKUSERFS)
+$(BUILT_SYSTEMIMAGE): $(INTERNAL_SYSTEMIMAGE_FILES) $(INTERNAL_USERIMAGES_DEPS)
 	$(call build-systemimage-target,$@)
 
-# The installed image, which may be optimized or unoptimized.
-#
 INSTALLED_SYSTEMIMAGE := $(PRODUCT_OUT)/system.img
-
-ifdef WITH_DEXPREOPT
-  ifndef DISABLE_DEXPREOPT
-    with_dexpreopt := true
-  endif
-endif
-ifdef with_dexpreopt
-  # This file will set BUILT_SYSTEMIMAGE and SYSTEMIMAGE_SOURCE_DIR
-  include build/tools/dexpreopt/Config.mk
-else
-  BUILT_SYSTEMIMAGE := $(BUILT_SYSTEMIMAGE_UNOPT)
-  SYSTEMIMAGE_SOURCE_DIR := $(TARGET_OUT)
-endif
+SYSTEMIMAGE_SOURCE_DIR := $(TARGET_OUT)
 
 # The system partition needs room for the recovery image as well.  We
 # now store the recovery image as a binary patch using the boot image
@@ -713,7 +771,7 @@ systemimage: $(INSTALLED_SYSTEMIMAGE)
 
 .PHONY: systemimage-nodeps snod
 systemimage-nodeps snod: $(filter-out systemimage-nodeps snod,$(MAKECMDGOALS)) \
-	            | $(INTERNAL_MKUSERFS)
+	            | $(INTERNAL_USERIMAGES_DEPS)
 	@echo "make $@: ignoring dependencies"
 	$(call build-systemimage-target,$(INSTALLED_SYSTEMIMAGE))
 	$(hide) $(call assert-max-image-size,$(INSTALLED_SYSTEMIMAGE),$(BOARD_SYSTEMIMAGE_PARTITION_SIZE),yaffs)
@@ -779,16 +837,16 @@ boottarball-nodeps btnod: $(FS_GET_STATS) \
 INTERNAL_USERDATAIMAGE_FILES := \
 	$(filter $(TARGET_OUT_DATA)/%,$(ALL_DEFAULT_INSTALLED_MODULES))
 
-ifeq ($(TARGET_USERIMAGES_USE_EXT2),true)
-## Generate an ext2 image
+ifeq ($(INTERNAL_USERIMAGES_USE_EXT),true)
+## Generate an ext image
 define build-userdataimage-target
     $(call pretty,"Target userdata fs image: $(INSTALLED_USERDATAIMAGE_TARGET)")
     @mkdir -p $(TARGET_OUT_DATA)
-    $(call build-userimage-ext2-target,$(TARGET_OUT_DATA),$(INSTALLED_USERDATAIMAGE_TARGET),userdata,)
+    $(call build-userimage-ext-target,$(TARGET_OUT_DATA),$(INSTALLED_USERDATAIMAGE_TARGET),data,$(INTERNAL_USERIMAGES_EXT_VARIANT),$(BOARD_USERDATAIMAGE_PARTITION_SIZE))
     $(hide) $(call assert-max-image-size,$(INSTALLED_USERDATAIMAGE_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
 endef
 
-else # TARGET_USERIMAGES_USE_EXT2 != true
+else # INTERNAL_USERIMAGES_USE_EXT != true
 
 ## Generate a yaffs2 image
 define build-userdataimage-target
@@ -797,18 +855,18 @@ define build-userdataimage-target
     $(hide) $(MKYAFFS2) -f $(mkyaffs2_extra_flags) $(TARGET_OUT_DATA) $(INSTALLED_USERDATAIMAGE_TARGET)
     $(hide) $(call assert-max-image-size,$(INSTALLED_USERDATAIMAGE_TARGET),$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
 endef
-endif # TARGET_USERIMAGES_USE_EXT2
+endif # INTERNAL_USERIMAGES_USE_EXT
 
 BUILT_USERDATAIMAGE_TARGET := $(PRODUCT_OUT)/userdata.img
 
 # We just build this directly to the install location.
 INSTALLED_USERDATAIMAGE_TARGET := $(BUILT_USERDATAIMAGE_TARGET)
-$(INSTALLED_USERDATAIMAGE_TARGET): $(INTERNAL_MKUSERFS) \
+$(INSTALLED_USERDATAIMAGE_TARGET): $(INTERNAL_USERIMAGES_DEPS) \
                                    $(INTERNAL_USERDATAIMAGE_FILES)
 	$(build-userdataimage-target)
 
 .PHONY: userdataimage-nodeps
-userdataimage-nodeps: $(INTERNAL_MKUSERFS)
+userdataimage-nodeps: $(INTERNAL_USERIMAGES_DEPS)
 	$(build-userdataimage-target)
 
 #######
@@ -932,6 +990,9 @@ endif
 ifdef BOARD_KERNEL_BASE
 	$(hide) echo "$(BOARD_KERNEL_BASE)" > $(zip_root)/RECOVERY/base
 endif
+ifdef BOARD_KERNEL_PAGESIZE
+	$(hide) echo "$(BOARD_KERNEL_PAGESIZE)" > $(zip_root)/RECOVERY/pagesize
+endif
 	@# Components of the boot image
 	$(hide) mkdir -p $(zip_root)/BOOT
 	$(hide) $(call package_files-copy-root, \
@@ -948,6 +1009,9 @@ ifdef BOARD_KERNEL_CMDLINE
 endif
 ifdef BOARD_KERNEL_BASE
 	$(hide) echo "$(BOARD_KERNEL_BASE)" > $(zip_root)/BOOT/base
+endif
+ifdef BOARD_KERNEL_PAGESIZE
+	$(hide) echo "$(BOARD_KERNEL_PAGESIZE)" > $(zip_root)/BOOT/pagesize
 endif
 	$(hide) $(foreach t,$(INSTALLED_RADIOIMAGE_TARGET),\
 	            mkdir -p $(zip_root)/RADIO; \
@@ -967,13 +1031,29 @@ endif
 	$(hide) mkdir -p $(zip_root)/META
 	$(hide) $(ACP) $(APKCERTS_FILE) $(zip_root)/META/apkcerts.txt
 	$(hide)	echo "$(PRODUCT_OTA_PUBLIC_KEYS)" > $(zip_root)/META/otakeys.txt
-	$(hide) echo "$(PRIVATE_RECOVERY_API_VERSION)" > $(zip_root)/META/recovery-api-version.txt
-	$(hide) echo "blocksize $(BOARD_FLASH_BLOCK_SIZE)" > $(zip_root)/META/imagesizes.txt
-	$(hide) echo "boot $(call image-size-from-data-size,$(BOARD_BOOTIMAGE_PARTITION_SIZE))" >> $(zip_root)/META/imagesizes.txt
-	$(hide) echo "recovery $(call image-size-from-data-size,$(BOARD_RECOVERYIMAGE_PARTITION_SIZE))" >> $(zip_root)/META/imagesizes.txt
-	$(hide) echo "system $(call image-size-from-data-size,$(BOARD_SYSTEMIMAGE_PARTITION_SIZE))" >> $(zip_root)/META/imagesizes.txt
-	$(hide) echo "userdata $(call image-size-from-data-size,$(BOARD_USERDATAIMAGE_PARTITION_SIZE))" >> $(zip_root)/META/imagesizes.txt
-	$(hide) echo "$(tool_extensions)" > $(zip_root)/META/tool-extensions.txt
+	$(hide) echo "recovery_api_version=$(PRIVATE_RECOVERY_API_VERSION)" > $(zip_root)/META/misc_info.txt
+ifdef BOARD_FLASH_BLOCK_SIZE
+	$(hide) echo "blocksize=$(BOARD_FLASH_BLOCK_SIZE)" >> $(zip_root)/META/misc_info.txt
+endif
+ifdef BOARD_BOOTIMAGE_PARTITION_SIZE
+	$(hide) echo "boot_size=$(BOARD_BOOTIMAGE_PARTITION_SIZE)" >> $(zip_root)/META/misc_info.txt
+endif
+ifdef BOARD_RECOVERYIMAGE_PARTITION_SIZE
+	$(hide) echo "recovery_size=$(BOARD_RECOVERYIMAGE_PARTITION_SIZE)" >> $(zip_root)/META/misc_info.txt
+endif
+ifdef BOARD_SYSTEMIMAGE_PARTITION_SIZE
+	$(hide) echo "system_size=$(BOARD_SYSTEMIMAGE_PARTITION_SIZE)" >> $(zip_root)/META/misc_info.txt
+endif
+ifdef BOARD_USERDATAIMAGE_PARTITION_SIZE
+	$(hide) echo "userdata_size=$(BOARD_USERDATAIMAGE_PARTITION_SIZE)" >> $(zip_root)/META/misc_info.txt
+endif
+	$(hide) echo "tool_extensions=$(tool_extensions)" >> $(zip_root)/META/misc_info.txt
+ifdef mkyaffs2_extra_flags
+	$(hide) echo "mkyaffs2_extra_flags=$(mkyaffs2_extra_flags)" >> $(zip_root)/META/misc_info.txt
+endif
+ifdef INTERNAL_USERIMAGES_SPARSE_EXT_FLAG
+	$(hide) echo "extfs_sparse_flag=$(INTERNAL_USERIMAGES_SPARSE_EXT_FLAG)" >> $(zip_root)/META/misc_info.txt
+endif
 	@# Zip everything up, preserving symlinks
 	$(hide) (cd $(zip_root) && zip -qry ../$(notdir $@) .)
 	@# Run fs_config on all the system files in the zip, and save the output
@@ -983,8 +1063,6 @@ endif
 
 target-files-package: $(BUILT_TARGET_FILES_PACKAGE)
 
-# -----------------------------------------------------------------
-# OTA update package
 
 ifneq ($(TARGET_SIMULATOR),true)
 ifneq ($(TARGET_PRODUCT),sdk)
@@ -992,7 +1070,14 @@ ifneq ($(TARGET_PRODUCT),sdk)
 ifneq ($(TARGET_PRODUCT),generic)
 =======
 ifneq ($(TARGET_DEVICE),generic)
+<<<<<<< HEAD
 >>>>>>> 1e80c294ffef26a6a7fe435411cd7557003b1d3f
+=======
+ifneq ($(TARGET_NO_KERNEL),true)
+
+# -----------------------------------------------------------------
+# OTA update package
+>>>>>>> 96d3e9b3108eb430a01cca41cb06baa1b8eb22ec
 
 name := $(TARGET_PRODUCT)
 ifeq ($(TARGET_BUILD_TYPE),debug)
@@ -1004,17 +1089,9 @@ INTERNAL_OTA_PACKAGE_TARGET := $(PRODUCT_OUT)/$(name).zip
 
 $(INTERNAL_OTA_PACKAGE_TARGET): KEY_CERT_PAIR := $(DEFAULT_KEY_CERT_PAIR)
 
-ifeq ($(TARGET_OTA_SCRIPT_MODE),)
-# default to "auto"
-$(INTERNAL_OTA_PACKAGE_TARGET): scriptmode := auto
-else
-$(INTERNAL_OTA_PACKAGE_TARGET): scriptmode := $(TARGET_OTA_SCRIPT_MODE)
-endif
-
 $(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
 	@echo "Package OTA: $@"
-	$(hide) ./build/tools/releasetools/ota_from_target_files \
-	   -m $(scriptmode) \
+	$(hide) ./build/tools/releasetools/ota_from_target_files -v \
 	   -p $(HOST_OUT) \
            -k $(KEY_CERT_PAIR) \
            $(BUILT_TARGET_FILES_PACKAGE) $@
@@ -1023,8 +1100,40 @@ $(INTERNAL_OTA_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
 otapackage: $(INTERNAL_OTA_PACKAGE_TARGET)
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 endif    # TARGET_PRODUCT != generic
 =======
+=======
+# -----------------------------------------------------------------
+# The update package
+
+name := $(TARGET_PRODUCT)
+ifeq ($(TARGET_BUILD_TYPE),debug)
+  name := $(name)_debug
+endif
+name := $(name)-img-$(FILE_NAME_TAG)
+
+INTERNAL_UPDATE_PACKAGE_TARGET := $(PRODUCT_OUT)/$(name).zip
+
+ifeq ($(TARGET_RELEASETOOLS_EXTENSIONS),)
+# default to common dir for device vendor
+$(INTERNAL_UPDATE_PACKAGE_TARGET): extensions := $(TARGET_DEVICE_DIR)/../common
+else
+$(INTERNAL_UPDATE_PACKAGE_TARGET): extensions := $(TARGET_RELEASETOOLS_EXTENSIONS)
+endif
+
+$(INTERNAL_UPDATE_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
+	@echo "Package: $@"
+	$(hide) ./build/tools/releasetools/img_from_target_files -v \
+	   -s $(extensions) \
+	   -p $(HOST_OUT) \
+	   $(BUILT_TARGET_FILES_PACKAGE) $@
+
+.PHONY: updatepackage
+updatepackage: $(INTERNAL_UPDATE_PACKAGE_TARGET)
+
+endif    # TARGET_NO_KERNEL != true
+>>>>>>> 96d3e9b3108eb430a01cca41cb06baa1b8eb22ec
 endif    # TARGET_DEVICE != generic
 >>>>>>> 1e80c294ffef26a6a7fe435411cd7557003b1d3f
 endif    # TARGET_PRODUCT != sdk
@@ -1085,7 +1194,19 @@ $(BUILT_TESTS_ZIP_PACKAGE): \
 		$(TARGET_OUT_DATA),$(zip_root)/DATA)
 	$(hide) (cd $(zip_root) && zip -qry ../$(notdir $@) .)
 
+.PHONY: tests-zip-package
 tests-zip-package: $(BUILT_TESTS_ZIP_PACKAGE)
+
+# Target needed by tests build
+.PHONY: tests-build-target
+tests-build-target: $(BUILT_TESTS_ZIP_PACKAGE) \
+                    $(BUILT_USERDATAIMAGE_TARGET)
+
+ifneq (,$(filter $(MAKECMDGOALS),tests-build-target))
+  $(call dist-for-goals, tests-build-target, \
+          $(BUILT_TESTS_ZIP_PACKAGE) \
+          $(BUILT_USERDATAIMAGE_TARGET))
+endif
 
 # -----------------------------------------------------------------
 # A zip of the symbols directory.  Keep the full paths to make it
@@ -1121,46 +1242,23 @@ $(APPS_ZIP): $(INSTALLED_SYSTEMIMAGE)
 	$(hide) mkdir -p $(dir $@)
 	$(hide) zip -qj $@ $(TARGET_OUT_APPS)/*
 
+
+#------------------------------------------------------------------
+# A zip of emma code coverage meta files. Generated for fully emma
+# instrumented build.
+#
+EMMA_META_ZIP := $(PRODUCT_OUT)/emma_meta.zip
+$(EMMA_META_ZIP): $(INSTALLED_SYSTEMIMAGE)
+	@echo "Collecting Emma coverage meta files."
+	$(hide) find $(TARGET_COMMON_OUT_ROOT) -name "coverage.em" | \
+		zip -@ -q $@
+
 endif	# TARGET_SIMULATOR != true
 
 # -----------------------------------------------------------------
 # dalvik something
 .PHONY: dalvikfiles
 dalvikfiles: $(INTERNAL_DALVIK_MODULES)
-
-# -----------------------------------------------------------------
-# The update package
-
-ifneq ($(TARGET_SIMULATOR),true)
-ifneq ($(TARGET_PRODUCT),sdk)
-
-name := $(TARGET_PRODUCT)
-ifeq ($(TARGET_BUILD_TYPE),debug)
-  name := $(name)_debug
-endif
-name := $(name)-img-$(FILE_NAME_TAG)
-
-INTERNAL_UPDATE_PACKAGE_TARGET := $(PRODUCT_OUT)/$(name).zip
-
-ifeq ($(TARGET_RELEASETOOLS_EXTENSIONS),)
-# default to common dir for device vendor
-$(INTERNAL_UPDATE_PACKAGE_TARGET): extensions := $(TARGET_DEVICE_DIR)/../common
-else
-$(INTERNAL_UPDATE_PACKAGE_TARGET): extensions := $(TARGET_RELEASETOOLS_EXTENSIONS)
-endif
-
-$(INTERNAL_UPDATE_PACKAGE_TARGET): $(BUILT_TARGET_FILES_PACKAGE) $(OTATOOLS)
-	@echo "Package: $@"
-	$(hide) ./build/tools/releasetools/img_from_target_files \
-	   -s $(extensions) \
-	   -p $(HOST_OUT) \
-	   $(BUILT_TARGET_FILES_PACKAGE) $@
-
-.PHONY: updatepackage
-updatepackage: $(INTERNAL_UPDATE_PACKAGE_TARGET)
-
-endif    # TARGET_PRODUCT != sdk
-endif    # TARGET_SIMULATOR != true
 
 # -----------------------------------------------------------------
 # The emulator package
